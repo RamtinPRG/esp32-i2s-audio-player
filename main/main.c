@@ -264,13 +264,15 @@ static void sd_read_task(void *arg)
             fseek(f, 0, SEEK_SET);
 
             // Calculate duration: 44100 Hz * 2 channels * 2 bytes = 176400 bytes/sec
-            float duration_sec = size / 176400.0f;
-            int mins = (int)duration_sec / 60;
-            int secs = (int)duration_sec % 60;
-
+            float duration_sec_f = size / 176400.0f;
+            uint32_t duration_sec = (uint32_t)duration_sec_f;
+            int mins = (int)duration_sec_f / 60;
+            int secs = (int)duration_sec_f % 60;
             ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)",
                      filepath, size / (1024.0f * 1024.0f), mins, secs);
-            ui_notify_track_started(filepath, playlist->current_index + 1, playlist->count);
+
+            // Pass duration to UI
+            ui_notify_track_started(filepath, playlist->current_index + 1, playlist->count, duration_sec);
         }
 
         /* Get an empty buffer */
