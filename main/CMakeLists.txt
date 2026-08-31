@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "ui_display.c"
+idf_component_register(SRCS "ui.c" "main.c"
                     PRIV_REQUIRES esp_driver_i2s esp_driver_gpio esp_partition driver vfs fatfs sdmmc heap log esp_driver_spi lvgl esp_lvgl_port esp_lcd
                     INCLUDE_DIRS ".")
 

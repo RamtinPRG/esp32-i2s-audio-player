@@ -1,12 +1,15 @@
-#ifndef UI_DISPLAY_H
-#define UI_DISPLAY_H
+#ifndef UI_H
+#define UI_H
 
 #include <stdint.h>
-#include "esp_err.h"
+#include "lvgl.h"
 
-void ui_display_init(void);
+/* Initialize the UI elements */
+void ui_init(void);
+
+/* Update functions */
 void ui_set_status(const char *text);
 void ui_notify_track_started(const char *path, int index, int count, uint32_t duration_sec);
 void ui_notify_track_finished(const char *path);
 
-#endif // UI_DISPLAY_H
+#endif // UI_H

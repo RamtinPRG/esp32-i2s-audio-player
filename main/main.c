@@ -30,28 +30,27 @@
 #include "esp_heap_caps.h"
 
 #include "sdkconfig.h"
-// #include "i2s_example_pins.h"
-#include "ui_display.h"
+
+#include "ui.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_dev.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lvgl_port.h"
 
 static const char *TAG = "I2S_SD";
 
-/* I2S pins from your existing example header */
+/* I2S pins */
 #define EXAMPLE_STD_BCLK_IO1 38
 #define EXAMPLE_STD_WS_IO1 40
 #define EXAMPLE_STD_DOUT_IO1 39
 #define EXAMPLE_STD_DIN_IO1 I2S_GPIO_UNUSED
 
-/*
- * SD card SPI pins.
- * IMPORTANT: On ESP32-S3, avoid GPIO19 and GPIO20 if you are using USB!
- * Adjust these to match your actual wiring.
- */
+/* SD card SPI pins */
 #define SD_PIN_MOSI 5
 #define SD_PIN_MISO 4
 #define SD_PIN_CLK 6
 #define SD_PIN_CS 7
-
-/* Mount point */
 #define SD_MOUNT_POINT "/sdcard"
 
 /* Audio buffer settings */
@@ -61,6 +60,18 @@ static const char *TAG = "I2S_SD";
 /* Playlist settings */
 #define MAX_FILES 128
 #define MAX_PATH_LEN 512
+
+/* ST7789 240x280 wiring */
+#define LCD_SPI_HOST SPI3_HOST
+#define LCD_PIN_SCLK 10
+#define LCD_PIN_MOSI 11
+#define LCD_PIN_RST 12
+#define LCD_PIN_DC 13
+#define LCD_PIN_CS 14
+#define LCD_H_RES 240
+#define LCD_V_RES 280
+#define LCD_BIT_PER_PIXEL 16
+#define LCD_PIXEL_CLOCK_HZ (40 * 1000 * 1000)
 
 static i2s_chan_handle_t tx_chan;
 static sdmmc_card_t *sd_card = NULL;
@@ -82,12 +93,83 @@ typedef struct
 } playlist_t;
 
 /*
+ * Initialize the Display Hardware and LVGL Port
+ */
+static void display_hardware_init(void)
+{
+    ESP_LOGI(TAG, "Initializing ST7789 + LVGL");
+
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_cfg.task_stack = 8192;
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    spi_bus_config_t buscfg = {
+        .sclk_io_num = LCD_PIN_SCLK,
+        .mosi_io_num = LCD_PIN_MOSI,
+        .miso_io_num = -1,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+    esp_lcd_panel_io_spi_config_t io_config = {
+        .dc_gpio_num = LCD_PIN_DC,
+        .cs_gpio_num = LCD_PIN_CS,
+        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .spi_mode = 0,
+        .trans_queue_depth = 10,
+    };
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_config, &io_handle));
+
+    esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = LCD_PIN_RST,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel = LCD_BIT_PER_PIXEL,
+        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
+    };
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 20));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+
+    lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = io_handle,
+        .panel_handle = panel_handle,
+        .hres = LCD_H_RES,
+        .vres = LCD_V_RES,
+        .buffer_size = LCD_H_RES * 40,
+        .double_buffer = true,
+        .color_format = LV_COLOR_FORMAT_RGB565,
+    };
+    lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
+    ESP_ERROR_CHECK(disp == NULL ? ESP_FAIL : ESP_OK);
+
+    /* Lock LVGL before calling our platform-agnostic UI init */
+    if (lvgl_port_lock(1000))
+    {
+        ui_init();
+        lvgl_port_unlock();
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to lock LVGL during UI creation");
+    }
+    ESP_LOGI(TAG, "LVGL UI ready");
+}
+
+/*
  * Mount SD card using SPI mode.
  */
 static esp_err_t mount_sdcard(void)
 {
     esp_err_t ret;
-
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
@@ -98,9 +180,6 @@ static esp_err_t mount_sdcard(void)
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI2_HOST;
-
-    // Start with a safe speed. Increase to 20000 (20MHz) later if stable.
-    // host.max_freq_khz = 10000;
 
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = SD_PIN_MOSI,
@@ -139,7 +218,6 @@ static esp_err_t mount_sdcard(void)
 
     ESP_LOGI(TAG, "SD card mounted successfully");
     sdmmc_card_print_info(stdout, sd_card);
-
     return ESP_OK;
 }
 
@@ -156,10 +234,7 @@ static void i2s_example_init_std(void)
 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
-
-        /* Note: If your DAC expects Philips format, change MSB to PHILIPS */
         .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = EXAMPLE_STD_BCLK_IO1,
@@ -173,7 +248,6 @@ static void i2s_example_init_std(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &std_cfg));
 }
 
-/* Helper for qsort */
 static int compare_strings(const void *a, const void *b)
 {
     return strcmp((const char *)a, (const char *)b);
@@ -202,7 +276,6 @@ static esp_err_t build_playlist(playlist_t *playlist)
         {
             const char *name = entry->d_name;
             int len = strlen(name);
-            // Check if it ends with .pcm (case-insensitive)
             if (len > 4 && strcasecmp(name + len - 4, ".pcm") == 0)
             {
                 snprintf(playlist->files[playlist->count], MAX_PATH_LEN, "%s/%s", SD_MOUNT_POINT, name);
@@ -218,7 +291,6 @@ static esp_err_t build_playlist(playlist_t *playlist)
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Sort the files alphabetically
     qsort(playlist->files, playlist->count, MAX_PATH_LEN, compare_strings);
 
     ESP_LOGI(TAG, "Found %d PCM file(s):", playlist->count);
@@ -246,8 +318,7 @@ static void sd_read_task(void *arg)
         if (f == NULL)
         {
             const char *filepath = playlist->files[playlist->current_index];
-            ESP_LOGI(TAG, "Opening track %d/%d: %s",
-                     playlist->current_index + 1, playlist->count, filepath);
+            ESP_LOGI(TAG, "Opening track %d/%d: %s", playlist->current_index + 1, playlist->count, filepath);
 
             f = fopen(filepath, "rb");
             if (f == NULL)
@@ -268,11 +339,14 @@ static void sd_read_task(void *arg)
             uint32_t duration_sec = (uint32_t)duration_sec_f;
             int mins = (int)duration_sec_f / 60;
             int secs = (int)duration_sec_f % 60;
-            ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)",
-                     filepath, size / (1024.0f * 1024.0f), mins, secs);
+            ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)", filepath, size / (1024.0f * 1024.0f), mins, secs);
 
-            // Pass duration to UI
-            ui_notify_track_started(filepath, playlist->current_index + 1, playlist->count, duration_sec);
+            /* Thread-safe UI update */
+            if (lvgl_port_lock(500))
+            {
+                ui_notify_track_started(filepath, playlist->current_index + 1, playlist->count, duration_sec);
+                lvgl_port_unlock();
+            }
         }
 
         /* Get an empty buffer */
@@ -286,9 +360,15 @@ static void sd_read_task(void *arg)
 
         if (bytes_read == 0)
         {
-            /* End of file reached */
             ESP_LOGI(TAG, "⏹ Finished playing: %s", playlist->files[playlist->current_index]);
-            ui_notify_track_finished(playlist->files[playlist->current_index]);
+
+            /* Thread-safe UI update */
+            if (lvgl_port_lock(500))
+            {
+                ui_notify_track_finished(playlist->files[playlist->current_index]);
+                lvgl_port_unlock();
+            }
+
             fclose(f);
             f = NULL;
 
@@ -319,7 +399,6 @@ static void sd_read_task(void *arg)
 static void i2s_write_task(void *arg)
 {
     audio_buffer_t buf;
-
     ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
 
     while (1)
@@ -351,14 +430,23 @@ static void i2s_write_task(void *arg)
 
 void app_main(void)
 {
-    /* Initialize LVGL display first */
-    ui_display_init();
-    ui_set_status("Mounting SD card...");
+    /* Initialize Hardware and LVGL display */
+    display_hardware_init();
+
+    if (lvgl_port_lock(500))
+    {
+        ui_set_status("Mounting SD card...");
+        lvgl_port_unlock();
+    }
 
     /* Mount SD card */
     ESP_ERROR_CHECK(mount_sdcard());
 
-    ui_set_status("Scanning PCM files...");
+    if (lvgl_port_lock(500))
+    {
+        ui_set_status("Scanning PCM files...");
+        lvgl_port_unlock();
+    }
 
     /* Build playlist */
     static playlist_t playlist;
@@ -367,11 +455,19 @@ void app_main(void)
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to build playlist. Halting.");
-        ui_set_status("No PCM files found!");
+        if (lvgl_port_lock(500))
+        {
+            ui_set_status("No PCM files found!");
+            lvgl_port_unlock();
+        }
         return;
     }
 
-    ui_set_status("Starting playback...");
+    if (lvgl_port_lock(500))
+    {
+        ui_set_status("Starting playback...");
+        lvgl_port_unlock();
+    }
 
     /* Initialize I2S */
     i2s_example_init_std();
@@ -387,9 +483,7 @@ void app_main(void)
     for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
     {
         uint8_t *mem = heap_caps_calloc(
-            AUDIO_BUFF_SIZE,
-            1,
-            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+            AUDIO_BUFF_SIZE, 1, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 
         if (mem == NULL)
         {
@@ -397,11 +491,7 @@ void app_main(void)
             abort();
         }
 
-        audio_buffer_t buf = {
-            .data = mem,
-            .len = 0,
-        };
-
+        audio_buffer_t buf = {.data = mem, .len = 0};
         xQueueSend(free_buffer_queue, &buf, 0);
     }
 
