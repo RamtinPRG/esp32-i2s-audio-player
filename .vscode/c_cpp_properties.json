@@ -5,15 +5,17 @@
       "compilerPath": "/home/ramtin/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc",
       "compileCommands": "${config:idf.buildPath}/compile_commands.json",
       "intelliSenseMode": "gcc-x86",
-      "includePath": [
-        "${workspaceFolder}/**"
-      ],
+      "includePath": ["${workspaceFolder}/**"],
       "browse": {
-        "path": [
-          "${workspaceFolder}"
-        ],
+        "path": ["${workspaceFolder}"],
         "limitSymbolsToIncludedHeaders": true
       }
+    },
+    {
+      "name": "Simulator",
+      "compilerPath": "/usr/bin/gcc",
+      "compileCommands": "${workspaceFolder}/sim/compile_commands.json",
+      "intelliSenseMode": "gcc-x86"
     }
   ],
   "version": 4
