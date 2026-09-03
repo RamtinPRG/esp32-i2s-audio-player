@@ -32,7 +32,7 @@
 #define UI_EQ_BAR_WIDTH 8
 #define UI_EQ_BAR_GAP 5
 #define UI_EQ_BASE_HEIGHT 6
-#define UI_EQ_BASELINE_Y (LCD_V_RES - 36)
+#define UI_EQ_BASELINE_Y (LCD_V_RES - 15) // Moved lower
 #define UI_EQ_HEIGHT_MIN 14
 #define UI_EQ_HEIGHT_MAX 42
 #define UI_EQ_DURATION_MIN 380
@@ -47,15 +47,13 @@ typedef struct
     lv_obj_t *artwork_card;
     lv_obj_t *vinyl_outer;
     lv_obj_t *vinyl_inner;
-    lv_obj_t *cover_img; // Added image widget for cover art
+    lv_obj_t *cover_img;
     lv_obj_t *track_label;
-    lv_obj_t *track_count_label;
     lv_obj_t *elapsed_label;
     lv_obj_t *progress_bar;
     lv_obj_t *total_label;
     lv_obj_t *eq_bars[UI_EQ_BAR_COUNT];
     bool eq_anim_active;
-    lv_obj_t *state_label;
     lv_timer_t *progress_timer;
     uint32_t total_duration_sec;
     uint32_t elapsed_duration_sec;
@@ -199,7 +197,7 @@ void ui_init(void)
 
     ui_ctx.artwork_card = lv_obj_create(ui_ctx.scr);
     no_scroll(ui_ctx.artwork_card);
-    lv_obj_set_size(ui_ctx.artwork_card, 100, 100);
+    lv_obj_set_size(ui_ctx.artwork_card, 140, 140); // Enlarged
     lv_obj_align(ui_ctx.artwork_card, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_set_style_bg_color(ui_ctx.artwork_card, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
     lv_obj_set_style_radius(ui_ctx.artwork_card, 12, LV_PART_MAIN);
@@ -208,68 +206,66 @@ void ui_init(void)
 
     ui_ctx.vinyl_outer = lv_obj_create(ui_ctx.artwork_card);
     no_scroll(ui_ctx.vinyl_outer);
-    lv_obj_set_size(ui_ctx.vinyl_outer, 80, 80);
+    lv_obj_set_size(ui_ctx.vinyl_outer, 120, 120); // Enlarged to match
     lv_obj_center(ui_ctx.vinyl_outer);
     lv_obj_set_style_bg_color(ui_ctx.vinyl_outer, lv_color_hex(COLOR_BG), LV_PART_MAIN);
-    lv_obj_set_style_radius(ui_ctx.vinyl_outer, 40, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.vinyl_outer, 60, LV_PART_MAIN); // Enlarged radius
     lv_obj_set_style_border_color(ui_ctx.vinyl_outer, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_ctx.vinyl_outer, 1, LV_PART_MAIN);
 
     ui_ctx.vinyl_inner = lv_obj_create(ui_ctx.vinyl_outer);
     no_scroll(ui_ctx.vinyl_inner);
-    lv_obj_set_size(ui_ctx.vinyl_inner, 20, 20);
+    lv_obj_set_size(ui_ctx.vinyl_inner, 30, 30); // Enlarged
     lv_obj_center(ui_ctx.vinyl_inner);
     lv_obj_set_style_bg_color(ui_ctx.vinyl_inner, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
-    lv_obj_set_style_radius(ui_ctx.vinyl_inner, 10, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.vinyl_inner, 15, LV_PART_MAIN); // Enlarged radius
 
 #if LV_VERSION_MAJOR >= 9
     ui_ctx.cover_img = lv_image_create(ui_ctx.scr);
-    // Tell LVGL 9 to stretch the image to fit the object bounds
     lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_STRETCH);
 #else
     ui_ctx.cover_img = lv_img_create(ui_ctx.scr);
-    // Note: LVGL v8 requires manual zooming if the image isn't exactly 100x100.
-    // Ensure your .bmp files are pre-scaled to 100x100 on the SD card for optimal v8 performance.
 #endif
 
-    // Explicitly set the widget size to match the 100x100 artwork_card
-    lv_obj_set_size(ui_ctx.cover_img, 100, 100);
+    lv_obj_set_size(ui_ctx.cover_img, 140, 140); // Enlarged
     lv_obj_align(ui_ctx.cover_img, LV_ALIGN_TOP_MID, 0, 20);
-    lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN); // Hidden by default
-    // Apply border radius
+    lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_radius(ui_ctx.cover_img, 12, LV_PART_MAIN);
     lv_obj_set_style_clip_corner(ui_ctx.cover_img, true, LV_PART_MAIN);
 
+    // --- Track Label ---
     ui_ctx.track_label = lv_label_create(ui_ctx.scr);
     lv_obj_set_width(ui_ctx.track_label, 200);
     lv_label_set_long_mode(ui_ctx.track_label, LV_LABEL_LONG_SCROLL_CIRC_COMPAT);
     lv_obj_set_style_text_align(ui_ctx.track_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_ctx.track_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+
+    // Set a slightly bigger font (Ensure LV_FONT_MONTSERRAT_16 is set to 1 in your lv_conf.h)
+    lv_obj_set_style_text_font(ui_ctx.track_label, &lv_font_montserrat_16, LV_PART_MAIN);
+
     lv_obj_set_style_anim_time(ui_ctx.track_label, 10000, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.track_label, "Waiting for track...");
-    lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 132);
+    lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 175);
 
-    ui_ctx.track_count_label = lv_label_create(ui_ctx.scr);
-    lv_label_set_text(ui_ctx.track_count_label, "-- / --");
-    lv_obj_set_style_text_color(ui_ctx.track_count_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
-    lv_obj_align(ui_ctx.track_count_label, LV_ALIGN_TOP_MID, 0, 156);
-
+    // --- Elapsed Time Label ---
     ui_ctx.elapsed_label = lv_label_create(ui_ctx.scr);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_obj_set_style_text_color(ui_ctx.elapsed_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
     lv_obj_set_size(ui_ctx.elapsed_label, 40, LV_SIZE_CONTENT);
-    lv_obj_align(ui_ctx.elapsed_label, LV_ALIGN_TOP_LEFT, 20, 184);
+    lv_obj_align(ui_ctx.elapsed_label, LV_ALIGN_TOP_LEFT, 20, 200); // Shifted Y from 215 to 200
 
+    // --- Total Time Label ---
     ui_ctx.total_label = lv_label_create(ui_ctx.scr);
     lv_label_set_text(ui_ctx.total_label, "00:00");
     lv_obj_set_style_text_color(ui_ctx.total_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
     lv_obj_set_size(ui_ctx.total_label, 40, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(ui_ctx.total_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_align(ui_ctx.total_label, LV_ALIGN_TOP_RIGHT, -20, 184);
+    lv_obj_align(ui_ctx.total_label, LV_ALIGN_TOP_RIGHT, -20, 200); // Shifted Y from 215 to 200
 
+    // --- Progress Bar ---
     ui_ctx.progress_bar = lv_bar_create(ui_ctx.scr);
     lv_obj_set_size(ui_ctx.progress_bar, 112, 4);
-    lv_obj_align(ui_ctx.progress_bar, LV_ALIGN_TOP_MID, 0, 188);
+    lv_obj_align(ui_ctx.progress_bar, LV_ALIGN_TOP_MID, 0, 204); // Shifted Y from 219 to 204
     lv_obj_set_style_bg_color(ui_ctx.progress_bar, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
     lv_obj_set_style_bg_color(ui_ctx.progress_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_radius(ui_ctx.progress_bar, 2, LV_PART_MAIN);
@@ -293,39 +289,22 @@ void ui_init(void)
         lv_obj_set_style_border_width(ui_ctx.eq_bars[i], 0, LV_PART_MAIN);
     }
 
-    ui_ctx.state_label = lv_label_create(ui_ctx.scr);
-    lv_label_set_text(ui_ctx.state_label, "● READY");
-    lv_obj_set_style_text_color(ui_ctx.state_label, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
-    lv_obj_set_style_text_letter_space(ui_ctx.state_label, 1, LV_PART_MAIN);
-    lv_obj_align(ui_ctx.state_label, LV_ALIGN_BOTTOM_MID, 0, -12);
-
     ui_ctx.progress_timer = lv_timer_create(progress_timer_cb, 1000, NULL);
 }
 
 void ui_set_status(const char *text)
 {
-    if (!ui_ctx.state_label || !text)
-        return;
-
-    const char *state_text = "● READY";
-    uint32_t color = COLOR_ACCENT;
-
-    if (strstr(text, "Mount") || strstr(text, "Scanning") || strstr(text, "Starting"))
+    if (ui_ctx.track_label && text)
     {
-        state_text = "● LOADING";
+        lv_label_set_text(ui_ctx.track_label, text);
     }
-    else if (strstr(text, "No PCM") || strstr(text, "Failed") || strstr(text, "Error"))
-    {
-        state_text = "● ERROR";
-        color = COLOR_ERROR;
-    }
-
-    lv_label_set_text(ui_ctx.state_label, state_text);
-    lv_obj_set_style_text_color(ui_ctx.state_label, lv_color_hex(color), LV_PART_MAIN);
 }
 
 void ui_notify_track_started(const char *path, const char *img_path, int index, int count, uint32_t duration_sec)
 {
+    (void)index; // Unused since we removed the track count label
+    (void)count;
+
     if (!path || !ui_ctx.track_label)
         return;
 
@@ -338,23 +317,21 @@ void ui_notify_track_started(const char *path, const char *img_path, int index, 
 #if LV_VERSION_MAJOR >= 9
         lv_image_set_src(ui_ctx.cover_img, img_path);
 
-        // Query the image header to find its native resolution
         lv_image_header_t header;
         if (lv_image_decoder_get_info(img_path, &header) == LV_RESULT_OK)
         {
-            // LVGL 9 scaling: 256 is 100% scale.
-            uint32_t scale_val = (100 * 256) / header.w;
+            // Scaled dynamically based on the new 140px width
+            uint32_t scale_val = (140 * 256) / header.w;
             lv_image_set_scale(ui_ctx.cover_img, scale_val);
         }
 #else
         lv_img_set_src(ui_ctx.cover_img, img_path);
 
-        // Query the image header to find its native resolution
         lv_img_header_t header;
         if (lv_img_decoder_get_info(img_path, &header) == LV_RES_OK)
         {
-            // LVGL 8 zoom: 256 is 100% scale.
-            uint16_t zoom_val = (100 * 256) / header.w;
+            // Scaled dynamically based on the new 140px width
+            uint16_t zoom_val = (140 * 256) / header.w;
             lv_img_set_zoom(ui_ctx.cover_img, zoom_val);
         }
 #endif
@@ -369,7 +346,6 @@ void ui_notify_track_started(const char *path, const char *img_path, int index, 
     get_display_name(path, name, sizeof(name));
 
     lv_label_set_text(ui_ctx.track_label, name);
-    lv_label_set_text_fmt(ui_ctx.track_count_label, "%02d / %02d", index, count);
 
     ui_ctx.total_duration_sec = duration_sec;
     ui_ctx.elapsed_duration_sec = 0;
@@ -382,9 +358,6 @@ void ui_notify_track_started(const char *path, const char *img_path, int index, 
 
     if (ui_ctx.progress_timer)
         lv_timer_reset(ui_ctx.progress_timer);
-
-    lv_label_set_text(ui_ctx.state_label, "PCM 44.1kHz");
-    lv_obj_set_style_text_color(ui_ctx.state_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
 
     if (!ui_ctx.eq_anim_active)
         start_eq_animations();
