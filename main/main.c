@@ -341,10 +341,31 @@ static void sd_read_task(void *arg)
             int secs = (int)duration_sec_f % 60;
             ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)", filepath, size / (1024.0f * 1024.0f), mins, secs);
 
+            // --- Check for corresponding .bmp cover art ---
+            char bmp_fs_path[MAX_PATH_LEN];
+            char bmp_lvgl_path[MAX_PATH_LEN + 2];
+            const char *img_arg = NULL;
+
+            strncpy(bmp_fs_path, filepath, sizeof(bmp_fs_path));
+            bmp_fs_path[sizeof(bmp_fs_path) - 1] = '\0';
+            char *ext = strrchr(bmp_fs_path, '.');
+            if (ext && (strcasecmp(ext, ".pcm") == 0))
+            {
+                strcpy(ext, ".bmp");
+                FILE *fbmp = fopen(bmp_fs_path, "r");
+                if (fbmp)
+                {
+                    fclose(fbmp);
+                    // Create standard LVGL filesystem path prefix (e.g., 'A:')
+                    snprintf(bmp_lvgl_path, sizeof(bmp_lvgl_path), "A:%s", bmp_fs_path);
+                    img_arg = bmp_lvgl_path;
+                }
+            }
+
             /* Thread-safe UI update */
             if (lvgl_port_lock(500))
             {
-                ui_notify_track_started(filepath, playlist->current_index + 1, playlist->count, duration_sec);
+                ui_notify_track_started(filepath, img_arg, playlist->current_index + 1, playlist->count, duration_sec);
                 lvgl_port_unlock();
             }
         }

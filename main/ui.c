@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#define LV_VERSION_MAJOR 9
+
 #if LV_VERSION_MAJOR >= 9
 #define GET_ACTIVE_SCREEN() lv_screen_active()
 #define LV_LABEL_LONG_SCROLL_CIRC_COMPAT LV_LABEL_LONG_SCROLL_CIRCULAR
@@ -45,6 +47,7 @@ typedef struct
     lv_obj_t *artwork_card;
     lv_obj_t *vinyl_outer;
     lv_obj_t *vinyl_inner;
+    lv_obj_t *cover_img; // Added image widget for cover art
     lv_obj_t *track_label;
     lv_obj_t *track_count_label;
     lv_obj_t *elapsed_label;
@@ -219,6 +222,24 @@ void ui_init(void)
     lv_obj_set_style_bg_color(ui_ctx.vinyl_inner, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
     lv_obj_set_style_radius(ui_ctx.vinyl_inner, 10, LV_PART_MAIN);
 
+#if LV_VERSION_MAJOR >= 9
+    ui_ctx.cover_img = lv_image_create(ui_ctx.scr);
+    // Tell LVGL 9 to stretch the image to fit the object bounds
+    lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_STRETCH);
+#else
+    ui_ctx.cover_img = lv_img_create(ui_ctx.scr);
+    // Note: LVGL v8 requires manual zooming if the image isn't exactly 100x100.
+    // Ensure your .bmp files are pre-scaled to 100x100 on the SD card for optimal v8 performance.
+#endif
+
+    // Explicitly set the widget size to match the 100x100 artwork_card
+    lv_obj_set_size(ui_ctx.cover_img, 100, 100);
+    lv_obj_align(ui_ctx.cover_img, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN); // Hidden by default
+    // Apply border radius
+    lv_obj_set_style_radius(ui_ctx.cover_img, 12, LV_PART_MAIN);
+    lv_obj_set_style_clip_corner(ui_ctx.cover_img, true, LV_PART_MAIN);
+
     ui_ctx.track_label = lv_label_create(ui_ctx.scr);
     lv_obj_set_width(ui_ctx.track_label, 200);
     lv_label_set_long_mode(ui_ctx.track_label, LV_LABEL_LONG_SCROLL_CIRC_COMPAT);
@@ -303,10 +324,46 @@ void ui_set_status(const char *text)
     lv_obj_set_style_text_color(ui_ctx.state_label, lv_color_hex(color), LV_PART_MAIN);
 }
 
-void ui_notify_track_started(const char *path, int index, int count, uint32_t duration_sec)
+void ui_notify_track_started(const char *path, const char *img_path, int index, int count, uint32_t duration_sec)
 {
     if (!path || !ui_ctx.track_label)
         return;
+
+    // --- Switch between cover art or vinyl fallback ---
+    if (img_path)
+    {
+        lv_obj_add_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
+
+#if LV_VERSION_MAJOR >= 9
+        lv_image_set_src(ui_ctx.cover_img, img_path);
+
+        // Query the image header to find its native resolution
+        lv_image_header_t header;
+        if (lv_image_decoder_get_info(img_path, &header) == LV_RESULT_OK)
+        {
+            // LVGL 9 scaling: 256 is 100% scale.
+            uint32_t scale_val = (100 * 256) / header.w;
+            lv_image_set_scale(ui_ctx.cover_img, scale_val);
+        }
+#else
+        lv_img_set_src(ui_ctx.cover_img, img_path);
+
+        // Query the image header to find its native resolution
+        lv_img_header_t header;
+        if (lv_img_decoder_get_info(img_path, &header) == LV_RES_OK)
+        {
+            // LVGL 8 zoom: 256 is 100% scale.
+            uint16_t zoom_val = (100 * 256) / header.w;
+            lv_img_set_zoom(ui_ctx.cover_img, zoom_val);
+        }
+#endif
+    }
+    else
+    {
+        lv_obj_clear_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
+    }
 
     char name[128];
     get_display_name(path, name, sizeof(name));

@@ -9,7 +9,7 @@ void ui_init(void);
 
 /* Update functions */
 void ui_set_status(const char *text);
-void ui_notify_track_started(const char *path, int index, int count, uint32_t duration_sec);
+void ui_notify_track_started(const char *path, const char *img_path, int index, int count, uint32_t duration_sec);
 void ui_notify_track_finished(const char *path);
 
 #endif // UI_H
