@@ -230,7 +230,7 @@ void ui_init(void)
     lv_obj_set_size(ui_ctx.cover_img, 140, 140); // Enlarged
     lv_obj_align(ui_ctx.cover_img, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_radius(ui_ctx.cover_img, 12, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.cover_img, 20, LV_PART_MAIN);
     lv_obj_set_style_clip_corner(ui_ctx.cover_img, true, LV_PART_MAIN);
 
     // --- Track Label ---
