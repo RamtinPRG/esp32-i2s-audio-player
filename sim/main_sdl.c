@@ -4,7 +4,7 @@
 #include "lvgl.h"
 #include "ui.h"
 
-#define LV_VERSION_MAJOR 9
+#define LVGL_VERSION_MAJOR 9
 
 #define WIDTH 240
 #define HEIGHT 280
@@ -31,7 +31,7 @@ int main(int argc, char *argv[])
 
     lv_init();
 
-#if LV_VERSION_MAJOR >= 9
+#if LVGL_VERSION_MAJOR >= 9
     /* LVGL 9 Native SDL Display & Input Drivers */
     lv_display_t *disp = lv_sdl_window_create(WIDTH, HEIGHT);
     lv_sdl_mouse_create();

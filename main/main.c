@@ -32,6 +32,7 @@
 #include "sdkconfig.h"
 
 #include "ui.h"
+#include "cover_cache.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_dev.h"
@@ -88,6 +89,7 @@ typedef struct
 typedef struct
 {
     char files[MAX_FILES][MAX_PATH_LEN];
+    cover_entry_t covers[MAX_FILES];
     int count;
     int current_index;
 } playlist_t;
@@ -303,6 +305,31 @@ static esp_err_t build_playlist(playlist_t *playlist)
     return ESP_OK;
 }
 
+static void preload_cover_art(playlist_t *playlist)
+{
+    int loaded = 0;
+
+    for (int i = 0; i < playlist->count; i++)
+    {
+        if (cover_cache_load_one(playlist->files[i], &playlist->covers[i]))
+        {
+            loaded++;
+        }
+
+        /*
+         * Optional: yield briefly so long preload loops do not starve
+         * lower priority tasks.
+         */
+        if ((i % 16) == 15)
+        {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+
+    ESP_LOGI(TAG, "Preloaded %d/%d cover images into PSRAM",
+             loaded, playlist->count);
+}
+
 /*
  * Task that reads audio data from the SD card playlist.
  */
@@ -342,24 +369,11 @@ static void sd_read_task(void *arg)
             ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)", filepath, size / (1024.0f * 1024.0f), mins, secs);
 
             // --- Check for corresponding .bmp cover art ---
-            char bmp_fs_path[MAX_PATH_LEN];
-            char bmp_lvgl_path[MAX_PATH_LEN + 2];
-            const char *img_arg = NULL;
+            const void *img_arg = NULL;
 
-            strncpy(bmp_fs_path, filepath, sizeof(bmp_fs_path));
-            bmp_fs_path[sizeof(bmp_fs_path) - 1] = '\0';
-            char *ext = strrchr(bmp_fs_path, '.');
-            if (ext && (strcasecmp(ext, ".pcm") == 0))
+            if (playlist->covers[playlist->current_index].valid)
             {
-                strcpy(ext, ".bmp");
-                FILE *fbmp = fopen(bmp_fs_path, "r");
-                if (fbmp)
-                {
-                    fclose(fbmp);
-                    // Create standard LVGL filesystem path prefix (e.g., 'A:')
-                    snprintf(bmp_lvgl_path, sizeof(bmp_lvgl_path), "A:%s", bmp_fs_path);
-                    img_arg = bmp_lvgl_path;
-                }
+                img_arg = &playlist->covers[playlist->current_index].dsc;
             }
 
             /* Thread-safe UI update */
@@ -483,6 +497,14 @@ void app_main(void)
         }
         return;
     }
+
+    if (lvgl_port_lock(500))
+    {
+        ui_set_status("Loading cover art...");
+        lvgl_port_unlock();
+    }
+
+    preload_cover_art(&playlist);
 
     if (lvgl_port_lock(500))
     {

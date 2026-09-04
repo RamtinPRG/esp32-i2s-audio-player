@@ -5,9 +5,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define LV_VERSION_MAJOR 9
+#define LVGL_VERSION_MAJOR 9
 
-#if LV_VERSION_MAJOR >= 9
+#if LVGL_VERSION_MAJOR >= 9
 #define GET_ACTIVE_SCREEN() lv_screen_active()
 #define LV_LABEL_LONG_SCROLL_CIRC_COMPAT LV_LABEL_LONG_SCROLL_CIRCULAR
 #else
@@ -220,7 +220,7 @@ void ui_init(void)
     lv_obj_set_style_bg_color(ui_ctx.vinyl_inner, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
     lv_obj_set_style_radius(ui_ctx.vinyl_inner, 15, LV_PART_MAIN); // Enlarged radius
 
-#if LV_VERSION_MAJOR >= 9
+#if LVGL_VERSION_MAJOR >= 9
     ui_ctx.cover_img = lv_image_create(ui_ctx.scr);
     lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_STRETCH);
 #else
@@ -300,44 +300,47 @@ void ui_set_status(const char *text)
     }
 }
 
-void ui_notify_track_started(const char *path, const char *img_path, int index, int count, uint32_t duration_sec)
+void ui_notify_track_started(const char *path,
+                             const void *cover_src,
+                             int index,
+                             int count,
+                             uint32_t duration_sec)
 {
-    (void)index; // Unused since we removed the track count label
+    (void)index;
     (void)count;
 
     if (!path || !ui_ctx.track_label)
+    {
         return;
+    }
 
-    // --- Switch between cover art or vinyl fallback ---
-    if (img_path)
+    /*
+     * If a predecoded cover exists, use it directly from PSRAM.
+     * No SD access, no BMP decode, no LVGL filesystem.
+     */
+    if (cover_src)
     {
         lv_obj_add_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
 
-#if LV_VERSION_MAJOR >= 9
-        lv_image_set_src(ui_ctx.cover_img, img_path);
+#if LVGL_VERSION_MAJOR >= 9
+        lv_image_set_src(ui_ctx.cover_img, cover_src);
 
-        lv_image_header_t header;
-        if (lv_image_decoder_get_info(img_path, &header) == LV_RESULT_OK)
-        {
-            // Scaled dynamically based on the new 140px width
-            uint32_t scale_val = (140 * 256) / header.w;
-            lv_image_set_scale(ui_ctx.cover_img, scale_val);
-        }
+        /*
+         * The preloaded images are already decoded to 140x140.
+         * Reset scale to 100% in case another track changed it.
+         */
+        lv_image_set_scale(ui_ctx.cover_img, 256);
 #else
-        lv_img_set_src(ui_ctx.cover_img, img_path);
-
-        lv_img_header_t header;
-        if (lv_img_decoder_get_info(img_path, &header) == LV_RES_OK)
-        {
-            // Scaled dynamically based on the new 140px width
-            uint16_t zoom_val = (140 * 256) / header.w;
-            lv_img_set_zoom(ui_ctx.cover_img, zoom_val);
-        }
+        lv_img_set_src(ui_ctx.cover_img, cover_src);
+        lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
 #endif
     }
     else
     {
+        /*
+         * No cover art: show vinyl placeholder.
+         */
         lv_obj_clear_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
     }
@@ -351,16 +354,23 @@ void ui_notify_track_started(const char *path, const char *img_path, int index, 
     ui_ctx.elapsed_duration_sec = 0;
 
     char buf[16];
-    snprintf(buf, sizeof(buf), "%02lu:%02lu", duration_sec / 60, duration_sec % 60);
+    snprintf(buf, sizeof(buf), "%02lu:%02lu",
+             (unsigned long)(duration_sec / 60),
+             (unsigned long)(duration_sec % 60));
+
     lv_label_set_text(ui_ctx.total_label, buf);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
 
     if (ui_ctx.progress_timer)
+    {
         lv_timer_reset(ui_ctx.progress_timer);
+    }
 
     if (!ui_ctx.eq_anim_active)
+    {
         start_eq_animations();
+    }
 }
 
 void ui_notify_track_finished(const char *path)
