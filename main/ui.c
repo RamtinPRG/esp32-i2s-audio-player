@@ -300,6 +300,60 @@ void ui_set_status(const char *text)
     }
 }
 
+static const void *pending_cover_src = NULL;
+static bool is_first_cover_shown = false;
+
+// Callback for horizontal sliding
+static void cover_translate_x_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_translate_x((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+// Callback for opacity
+static void cover_opa_anim_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+// Called when the slide-out animation finishes
+static void cover_slide_out_ready_cb(lv_anim_t *a)
+{
+    if (pending_cover_src)
+    {
+        // 1. Swap the image source while it's invisible and off-screen
+#if LVGL_VERSION_MAJOR >= 9
+        lv_image_set_src(ui_ctx.cover_img, pending_cover_src);
+        lv_image_set_scale(ui_ctx.cover_img, 256);
+#else
+        lv_img_set_src(ui_ctx.cover_img, pending_cover_src);
+        lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
+#endif
+        pending_cover_src = NULL;
+
+        // 2. Move it to the LEFT off-screen (-150px) and keep it invisible
+        lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+
+        // 3. Start the Slide-In animation
+        lv_anim_t a_in_x, a_in_opa;
+
+        lv_anim_init(&a_in_x);
+        lv_anim_set_var(&a_in_x, ui_ctx.cover_img);
+        lv_anim_set_values(&a_in_x, -150, 0); // From left off-screen to center
+        lv_anim_set_duration(&a_in_x, 350);
+        lv_anim_set_exec_cb(&a_in_x, cover_translate_x_cb);
+        lv_anim_set_path_cb(&a_in_x, lv_anim_path_ease_out);
+        lv_anim_start(&a_in_x);
+
+        lv_anim_init(&a_in_opa);
+        lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
+        lv_anim_set_values(&a_in_opa, 0, 255);
+        lv_anim_set_duration(&a_in_opa, 350);
+        lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
+        lv_anim_start(&a_in_opa);
+    }
+}
+
 void ui_notify_track_started(const char *path,
                              const void *cover_src,
                              int index,
@@ -314,40 +368,96 @@ void ui_notify_track_started(const char *path,
         return;
     }
 
-    /*
-     * If a predecoded cover exists, use it directly from PSRAM.
-     * No SD access, no BMP decode, no LVGL filesystem.
-     */
+    // Check if this is the first time the cover image is being shown
+    bool is_first_time = lv_obj_has_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
+
     if (cover_src)
     {
         lv_obj_add_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
 
-#if LVGL_VERSION_MAJOR >= 9
-        lv_image_set_src(ui_ctx.cover_img, cover_src);
+        // Cancel any ongoing animations to prevent conflicts
+        lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
+        lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
 
-        /*
-         * The preloaded images are already decoded to 140x140.
-         * Reset scale to 100% in case another track changed it.
-         */
-        lv_image_set_scale(ui_ctx.cover_img, 256);
+        if (!is_first_cover_shown)
+        {
+            // First track: Start from left off-screen, set source, and slide in
+            is_first_cover_shown = true;
+            lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
+            lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+
+#if LVGL_VERSION_MAJOR >= 9
+            lv_image_set_src(ui_ctx.cover_img, cover_src);
+            lv_image_set_scale(ui_ctx.cover_img, 256);
 #else
-        lv_img_set_src(ui_ctx.cover_img, cover_src);
-        lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
+            lv_img_set_src(ui_ctx.cover_img, cover_src);
+            lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
 #endif
+
+            lv_anim_t a_in_x, a_in_opa;
+
+            lv_anim_init(&a_in_x);
+            lv_anim_set_var(&a_in_x, ui_ctx.cover_img);
+            lv_anim_set_values(&a_in_x, -150, 0);
+            lv_anim_set_duration(&a_in_x, 500); // Slightly slower for the intro
+            lv_anim_set_exec_cb(&a_in_x, cover_translate_x_cb);
+            lv_anim_set_path_cb(&a_in_x, lv_anim_path_ease_out);
+            lv_anim_start(&a_in_x);
+
+            lv_anim_init(&a_in_opa);
+            lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
+            lv_anim_set_values(&a_in_opa, 0, 255);
+            lv_anim_set_duration(&a_in_opa, 500);
+            lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
+            lv_anim_start(&a_in_opa);
+        }
+        else
+        {
+            // Subsequent tracks: Slide out to the right
+            pending_cover_src = cover_src;
+
+            // Get current position in case we are interrupting a previous animation
+            int32_t current_x = lv_obj_get_style_translate_x(ui_ctx.cover_img, LV_PART_MAIN);
+            int32_t current_opa = lv_obj_get_style_opa(ui_ctx.cover_img, LV_PART_MAIN);
+
+            lv_anim_t a_out_x, a_out_opa;
+
+            // Slide out X
+            lv_anim_init(&a_out_x);
+            lv_anim_set_var(&a_out_x, ui_ctx.cover_img);
+            lv_anim_set_values(&a_out_x, current_x, 150); // Slide to right off-screen
+            lv_anim_set_duration(&a_out_x, 300);
+            lv_anim_set_exec_cb(&a_out_x, cover_translate_x_cb);
+            lv_anim_set_path_cb(&a_out_x, lv_anim_path_ease_in);
+            lv_anim_set_ready_cb(&a_out_x, cover_slide_out_ready_cb); // Trigger swap
+            lv_anim_start(&a_out_x);
+
+            // Fade out Opacity
+            lv_anim_init(&a_out_opa);
+            lv_anim_set_var(&a_out_opa, ui_ctx.cover_img);
+            lv_anim_set_values(&a_out_opa, current_opa, 0);
+            lv_anim_set_duration(&a_out_opa, 300);
+            lv_anim_set_exec_cb(&a_out_opa, cover_opa_anim_cb);
+            lv_anim_start(&a_out_opa);
+        }
     }
     else
     {
-        /*
-         * No cover art: show vinyl placeholder.
-         */
+        // No cover art: show vinyl placeholder
+        lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
+        lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
+
+        // Reset cover_img state just in case
+        lv_obj_set_style_translate_x(ui_ctx.cover_img, 0, LV_PART_MAIN);
+        lv_obj_set_style_opa(ui_ctx.cover_img, 255, LV_PART_MAIN);
+
         lv_obj_clear_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
     }
 
     char name[128];
     get_display_name(path, name, sizeof(name));
-
     lv_label_set_text(ui_ctx.track_label, name);
 
     ui_ctx.total_duration_sec = duration_sec;
@@ -357,7 +467,6 @@ void ui_notify_track_started(const char *path,
     snprintf(buf, sizeof(buf), "%02lu:%02lu",
              (unsigned long)(duration_sec / 60),
              (unsigned long)(duration_sec % 60));
-
     lv_label_set_text(ui_ctx.total_label, buf);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
