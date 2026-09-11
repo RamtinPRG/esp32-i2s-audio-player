@@ -5,16 +5,6 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define LVGL_VERSION_MAJOR 9
-
-#if LVGL_VERSION_MAJOR >= 9
-#define GET_ACTIVE_SCREEN() lv_screen_active()
-#define LV_LABEL_LONG_SCROLL_CIRC_COMPAT LV_LABEL_LONG_SCROLL_CIRCULAR
-#else
-#define GET_ACTIVE_SCREEN() lv_scr_act()
-#define LV_LABEL_LONG_SCROLL_CIRC_COMPAT LV_LABEL_LONG_SCROLL_CIRCULAR
-#endif
-
 #define LCD_H_RES 240
 #define LCD_V_RES 280
 
@@ -32,7 +22,7 @@
 #define UI_EQ_BAR_WIDTH 8
 #define UI_EQ_BAR_GAP 5
 #define UI_EQ_BASE_HEIGHT 6
-#define UI_EQ_BASELINE_Y (LCD_V_RES - 15) // Moved lower
+#define UI_EQ_BASELINE_Y (LCD_V_RES - 15)
 #define UI_EQ_HEIGHT_MIN 14
 #define UI_EQ_HEIGHT_MAX 42
 #define UI_EQ_DURATION_MIN 380
@@ -68,6 +58,8 @@ typedef struct
 } ui_ctx_t;
 
 static ui_ctx_t ui_ctx = {0};
+static const void *pending_cover_src = NULL;
+static bool is_first_cover_shown = false;
 
 static void no_scroll(lv_obj_t *obj)
 {
@@ -85,6 +77,7 @@ static void get_display_name(const char *path, char *out, size_t out_len)
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     snprintf(out, out_len, "%s", base);
+
     char *dot = strrchr(out, '.');
     if (dot)
     {
@@ -107,8 +100,7 @@ static uint8_t get_dynamic_height(int i)
     int range = UI_EQ_HEIGHT_MAX - UI_EQ_HEIGHT_MIN;
     if (range <= 0)
         return UI_EQ_HEIGHT_MIN;
-    int val = (i * 67 + 31) % (range + 1);
-    return UI_EQ_HEIGHT_MIN + val;
+    return UI_EQ_HEIGHT_MIN + ((i * 67 + 31) % (range + 1));
 }
 
 static uint16_t get_dynamic_duration(int i)
@@ -116,8 +108,7 @@ static uint16_t get_dynamic_duration(int i)
     int range = UI_EQ_DURATION_MAX - UI_EQ_DURATION_MIN;
     if (range <= 0)
         return UI_EQ_DURATION_MIN;
-    int val = (i * 83 + 47) % (range + 1);
-    return UI_EQ_DURATION_MIN + val;
+    return UI_EQ_DURATION_MIN + ((i * 83 + 47) % (range + 1));
 }
 
 static uint32_t interpolate_color(uint32_t c1, uint32_t c2, int i, int total)
@@ -136,13 +127,16 @@ static void start_eq_animations(void)
 {
     if (ui_ctx.eq_anim_active)
         return;
+
     for (int i = 0; i < UI_EQ_BAR_COUNT; i++)
     {
         if (!ui_ctx.eq_bars[i])
             continue;
         uint8_t max_h = get_dynamic_height(i);
         uint16_t dur = get_dynamic_duration(i);
+
         lv_anim_delete(ui_ctx.eq_bars[i], anim_eq_height_cb);
+
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, ui_ctx.eq_bars[i]);
@@ -162,11 +156,13 @@ static void stop_eq_animations(void)
 {
     if (!ui_ctx.eq_anim_active)
         return;
+
     for (int i = 0; i < UI_EQ_BAR_COUNT; i++)
     {
         if (!ui_ctx.eq_bars[i])
             continue;
         lv_anim_delete(ui_ctx.eq_bars[i], anim_eq_height_cb);
+
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, ui_ctx.eq_bars[i]);
@@ -181,85 +177,161 @@ static void stop_eq_animations(void)
 
 static void progress_timer_cb(lv_timer_t *timer)
 {
+    (void)timer;
     if (ui_ctx.total_duration_sec == 0)
         return;
+
     if (ui_ctx.elapsed_duration_sec < ui_ctx.total_duration_sec)
     {
         ui_ctx.elapsed_duration_sec++;
         char buf[16];
-        snprintf(buf, sizeof(buf), "%02lu:%02lu", ui_ctx.elapsed_duration_sec / 60, ui_ctx.elapsed_duration_sec % 60);
+        snprintf(buf, sizeof(buf), "%02u:%02u",
+                 ui_ctx.elapsed_duration_sec / 60,
+                 ui_ctx.elapsed_duration_sec % 60);
+
         if (ui_ctx.elapsed_label)
+        {
             lv_label_set_text(ui_ctx.elapsed_label, buf);
+        }
+
         uint32_t percent = (ui_ctx.elapsed_duration_sec * 100) / ui_ctx.total_duration_sec;
         if (ui_ctx.progress_bar)
+        {
             lv_bar_set_value(ui_ctx.progress_bar, percent, LV_ANIM_ON);
+        }
+    }
+}
+
+static void cover_translate_x_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_translate_x((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+static void cover_opa_anim_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+static void cover_scale_anim_cb(void *var, int32_t v)
+{
+    lv_image_set_scale((lv_obj_t *)var, v);
+}
+
+static void start_cover_in_animation(uint32_t duration)
+{
+    lv_anim_t a_in;
+
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
+    lv_anim_init(&a_in);
+    lv_anim_set_var(&a_in, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in, -150, 0);
+    lv_anim_set_duration(&a_in, duration);
+    lv_anim_set_exec_cb(&a_in, cover_translate_x_cb);
+    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
+    lv_anim_start(&a_in);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+    lv_anim_init(&a_in);
+    lv_anim_set_var(&a_in, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in, 0, 256); // 256 is 100% scale in LVGL v9
+    lv_anim_set_duration(&a_in, duration);
+    lv_anim_set_exec_cb(&a_in, cover_scale_anim_cb);
+    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
+    lv_anim_start(&a_in);
+#endif
+
+    lv_anim_t a_in_opa;
+    lv_anim_init(&a_in_opa);
+    lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in_opa, 0, LV_OPA_COVER);
+    lv_anim_set_duration(&a_in_opa, duration);
+    lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
+    lv_anim_start(&a_in_opa);
+}
+
+static void cover_transition_out_ready_cb(lv_anim_t *a)
+{
+    (void)a;
+    if (pending_cover_src)
+    {
+        lv_image_set_src(ui_ctx.cover_img, pending_cover_src);
+        lv_image_set_scale(ui_ctx.cover_img, 256);
+        pending_cover_src = NULL;
+
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
+        lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+        lv_image_set_scale(ui_ctx.cover_img, 0);
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#endif
+
+        start_cover_in_animation(350);
     }
 }
 
 void ui_init(void)
 {
-    ui_ctx.scr = GET_ACTIVE_SCREEN();
+    ui_ctx.scr = lv_screen_active();
     no_scroll(ui_ctx.scr);
     lv_obj_set_style_bg_color(ui_ctx.scr, lv_color_hex(COLOR_BG), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(ui_ctx.scr, LV_OPA_COVER, LV_PART_MAIN);
 
+    /* Artwork Container Card */
     ui_ctx.artwork_card = lv_obj_create(ui_ctx.scr);
     no_scroll(ui_ctx.artwork_card);
-    lv_obj_set_size(ui_ctx.artwork_card, 140, 140); // Enlarged
+    lv_obj_set_size(ui_ctx.artwork_card, 140, 140);
     lv_obj_align(ui_ctx.artwork_card, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_set_style_bg_color(ui_ctx.artwork_card, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
     lv_obj_set_style_radius(ui_ctx.artwork_card, 12, LV_PART_MAIN);
     lv_obj_set_style_border_color(ui_ctx.artwork_card, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_ctx.artwork_card, 1, LV_PART_MAIN);
 
+    /* Vinyl Placeholder */
     ui_ctx.vinyl_outer = lv_obj_create(ui_ctx.artwork_card);
     no_scroll(ui_ctx.vinyl_outer);
-    lv_obj_set_size(ui_ctx.vinyl_outer, 120, 120); // Enlarged to match
+    lv_obj_set_size(ui_ctx.vinyl_outer, 120, 120);
     lv_obj_center(ui_ctx.vinyl_outer);
     lv_obj_set_style_bg_color(ui_ctx.vinyl_outer, lv_color_hex(COLOR_BG), LV_PART_MAIN);
-    lv_obj_set_style_radius(ui_ctx.vinyl_outer, 60, LV_PART_MAIN); // Enlarged radius
+    lv_obj_set_style_radius(ui_ctx.vinyl_outer, 60, LV_PART_MAIN);
     lv_obj_set_style_border_color(ui_ctx.vinyl_outer, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_ctx.vinyl_outer, 1, LV_PART_MAIN);
 
     ui_ctx.vinyl_inner = lv_obj_create(ui_ctx.vinyl_outer);
     no_scroll(ui_ctx.vinyl_inner);
-    lv_obj_set_size(ui_ctx.vinyl_inner, 30, 30); // Enlarged
+    lv_obj_set_size(ui_ctx.vinyl_inner, 30, 30);
     lv_obj_center(ui_ctx.vinyl_inner);
     lv_obj_set_style_bg_color(ui_ctx.vinyl_inner, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
-    lv_obj_set_style_radius(ui_ctx.vinyl_inner, 15, LV_PART_MAIN); // Enlarged radius
+    lv_obj_set_style_radius(ui_ctx.vinyl_inner, 15, LV_PART_MAIN);
 
-#if LVGL_VERSION_MAJOR >= 9
+    /* Album Cover Image */
     ui_ctx.cover_img = lv_image_create(ui_ctx.scr);
-    /* Changed from LV_IMAGE_ALIGN_STRETCH to LV_IMAGE_ALIGN_CENTER to allow zoom/scale transformations */
     lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_CENTER);
-#else
-    ui_ctx.cover_img = lv_img_create(ui_ctx.scr);
-#endif
-    lv_obj_set_size(ui_ctx.cover_img, 140, 140); // Enlarged
+    lv_obj_set_size(ui_ctx.cover_img, 140, 140);
     lv_obj_align(ui_ctx.cover_img, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_radius(ui_ctx.cover_img, 20, LV_PART_MAIN);
     lv_obj_set_style_clip_corner(ui_ctx.cover_img, true, LV_PART_MAIN);
 
-    // --- Track Label ---
+    /* Track Label */
     ui_ctx.track_label = lv_label_create(ui_ctx.scr);
     lv_obj_set_width(ui_ctx.track_label, 200);
-    lv_label_set_long_mode(ui_ctx.track_label, LV_LABEL_LONG_SCROLL_CIRC_COMPAT);
+    lv_label_set_long_mode(ui_ctx.track_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_text_align(ui_ctx.track_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_ctx.track_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
     lv_obj_set_style_text_font(ui_ctx.track_label, &lv_font_montserrat_16, LV_PART_MAIN);
-    lv_obj_set_style_anim_time(ui_ctx.track_label, 10000, LV_PART_MAIN);
+    lv_obj_set_style_anim_duration(ui_ctx.track_label, 10000, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.track_label, "Waiting for track...");
     lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 175);
 
-    // --- Elapsed Time Label ---
+    /* Timers & Progress Bar */
     ui_ctx.elapsed_label = lv_label_create(ui_ctx.scr);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_obj_set_style_text_color(ui_ctx.elapsed_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
     lv_obj_set_size(ui_ctx.elapsed_label, 40, LV_SIZE_CONTENT);
     lv_obj_align(ui_ctx.elapsed_label, LV_ALIGN_TOP_LEFT, 20, 200);
 
-    // --- Total Time Label ---
     ui_ctx.total_label = lv_label_create(ui_ctx.scr);
     lv_label_set_text(ui_ctx.total_label, "00:00");
     lv_obj_set_style_text_color(ui_ctx.total_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
@@ -267,7 +339,6 @@ void ui_init(void)
     lv_obj_set_style_text_align(ui_ctx.total_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_obj_align(ui_ctx.total_label, LV_ALIGN_TOP_RIGHT, -20, 200);
 
-    // --- Progress Bar ---
     ui_ctx.progress_bar = lv_bar_create(ui_ctx.scr);
     lv_obj_set_size(ui_ctx.progress_bar, 112, 4);
     lv_obj_align(ui_ctx.progress_bar, LV_ALIGN_TOP_MID, 0, 204);
@@ -277,6 +348,7 @@ void ui_init(void)
     lv_obj_set_style_radius(ui_ctx.progress_bar, 2, LV_PART_INDICATOR);
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
 
+    /* Equalizer Visualizer Bars */
     int total_w = UI_EQ_BAR_COUNT * UI_EQ_BAR_WIDTH + (UI_EQ_BAR_COUNT - 1) * UI_EQ_BAR_GAP;
     int start_x = (LCD_H_RES - total_w) / 2;
     for (int i = 0; i < UI_EQ_BAR_COUNT; i++)
@@ -286,6 +358,7 @@ void ui_init(void)
         lv_obj_set_size(ui_ctx.eq_bars[i], UI_EQ_BAR_WIDTH, UI_EQ_BASE_HEIGHT);
         int16_t x_offset = (int16_t)(start_x + i * (UI_EQ_BAR_WIDTH + UI_EQ_BAR_GAP) - (LCD_H_RES / 2));
         lv_obj_align(ui_ctx.eq_bars[i], LV_ALIGN_TOP_MID, x_offset, UI_EQ_BASELINE_Y - UI_EQ_BASE_HEIGHT);
+
         uint32_t color = interpolate_color(UI_EQ_COLOR_START, UI_EQ_COLOR_END, i, UI_EQ_BAR_COUNT);
         lv_obj_set_style_bg_color(ui_ctx.eq_bars[i], lv_color_hex(color), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(ui_ctx.eq_bars[i], LV_OPA_COVER, LV_PART_MAIN);
@@ -304,124 +377,24 @@ void ui_set_status(const char *text)
     }
 }
 
-static const void *pending_cover_src = NULL;
-static bool is_first_cover_shown = false;
-
-// --- Animation Callbacks ---
-static void cover_translate_x_cb(void *var, int32_t v)
-{
-    lv_obj_set_style_translate_x((lv_obj_t *)var, v, LV_PART_MAIN);
-}
-
-static void cover_opa_anim_cb(void *var, int32_t v)
-{
-    lv_obj_set_style_opa((lv_obj_t *)var, v, LV_PART_MAIN);
-}
-
-static void set_cover_scale(lv_obj_t *obj, int32_t v)
-{
-#if LVGL_VERSION_MAJOR >= 9
-    lv_image_set_scale(obj, v);
-#else
-    lv_img_set_zoom(obj, v);
-#endif
-}
-
-static void cover_scale_anim_cb(void *var, int32_t v)
-{
-    set_cover_scale((lv_obj_t *)var, v);
-}
-
-// Helper to start the "Slide/Zoom/Fade In" animation
-static void start_cover_in_animation(uint32_t duration)
-{
-    lv_anim_t a_in;
-
-#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
-    lv_anim_init(&a_in);
-    lv_anim_set_var(&a_in, ui_ctx.cover_img);
-    lv_anim_set_values(&a_in, -150, 0);
-    lv_anim_set_duration(&a_in, duration);
-    lv_anim_set_exec_cb(&a_in, cover_translate_x_cb);
-    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
-    lv_anim_start(&a_in);
-#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
-    lv_anim_init(&a_in);
-    lv_anim_set_var(&a_in, ui_ctx.cover_img);
-    lv_anim_set_values(&a_in, 0, 256); // 256 is 100% scale in LVGL
-    lv_anim_set_duration(&a_in, duration);
-    lv_anim_set_exec_cb(&a_in, cover_scale_anim_cb);
-    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
-    lv_anim_start(&a_in);
-#endif
-
-    // Fade in Opacity (Applied to all modes for a smoother look)
-    lv_anim_t a_in_opa;
-    lv_anim_init(&a_in_opa);
-    lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
-    lv_anim_set_values(&a_in_opa, 0, 255);
-    lv_anim_set_duration(&a_in_opa, duration);
-    lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
-    lv_anim_start(&a_in_opa);
-}
-
-// Called when the "out" animation finishes
-static void cover_transition_out_ready_cb(lv_anim_t *a)
-{
-    if (pending_cover_src)
-    {
-        // 1. Swap the image source while it's invisible
-#if LVGL_VERSION_MAJOR >= 9
-        lv_image_set_src(ui_ctx.cover_img, pending_cover_src);
-        lv_image_set_scale(ui_ctx.cover_img, 256);
-#else
-        lv_img_set_src(ui_ctx.cover_img, pending_cover_src);
-        lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
-#endif
-        pending_cover_src = NULL;
-
-        // 2. Prepare initial state for the "in" animation based on mode
-#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
-        lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
-        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
-#elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
-        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
-#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
-        set_cover_scale(ui_ctx.cover_img, 0);
-        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
-#endif
-
-        // 3. Start the "in" animation
-        start_cover_in_animation(350);
-    }
-}
-
-void ui_notify_track_started(const char *path,
-                             const void *cover_src,
-                             int index,
-                             int count,
-                             uint32_t duration_sec)
+void ui_notify_track_started(const char *path, const void *cover_src, int index, int count, uint32_t duration_sec)
 {
     (void)index;
     (void)count;
     if (!path || !ui_ctx.track_label)
-    {
         return;
-    }
 
     if (cover_src)
     {
         lv_obj_add_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
 
-        // Cancel any ongoing animations to prevent conflicts
         lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_scale_anim_cb);
 
         if (!is_first_cover_shown)
         {
-            // First track: Setup initial state and slide/scale/fade in
             is_first_cover_shown = true;
 
 #if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
@@ -430,23 +403,16 @@ void ui_notify_track_started(const char *path,
 #elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
             lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
 #elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
-            set_cover_scale(ui_ctx.cover_img, 0);
+            lv_image_set_scale(ui_ctx.cover_img, 0);
             lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
 #endif
 
-#if LVGL_VERSION_MAJOR >= 9
             lv_image_set_src(ui_ctx.cover_img, cover_src);
             lv_image_set_scale(ui_ctx.cover_img, 256);
-#else
-            lv_img_set_src(ui_ctx.cover_img, cover_src);
-            lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
-#endif
-            // Slightly slower for the intro
             start_cover_in_animation(350);
         }
         else
         {
-            // Subsequent tracks: Trigger "out" animation based on mode
             pending_cover_src = cover_src;
             int32_t current_opa = lv_obj_get_style_opa(ui_ctx.cover_img, LV_PART_MAIN);
 
@@ -455,7 +421,7 @@ void ui_notify_track_started(const char *path,
             lv_anim_t a_out_x;
             lv_anim_init(&a_out_x);
             lv_anim_set_var(&a_out_x, ui_ctx.cover_img);
-            lv_anim_set_values(&a_out_x, current_x, 150); // Slide to right off-screen
+            lv_anim_set_values(&a_out_x, current_x, 150);
             lv_anim_set_duration(&a_out_x, 300);
             lv_anim_set_exec_cb(&a_out_x, cover_translate_x_cb);
             lv_anim_set_path_cb(&a_out_x, lv_anim_path_ease_in);
@@ -465,14 +431,13 @@ void ui_notify_track_started(const char *path,
             lv_anim_t a_out_scale;
             lv_anim_init(&a_out_scale);
             lv_anim_set_var(&a_out_scale, ui_ctx.cover_img);
-            lv_anim_set_values(&a_out_scale, 256, 0); // Scale down to 0
+            lv_anim_set_values(&a_out_scale, 256, 0);
             lv_anim_set_duration(&a_out_scale, 300);
             lv_anim_set_exec_cb(&a_out_scale, cover_scale_anim_cb);
             lv_anim_set_path_cb(&a_out_scale, lv_anim_path_ease_in);
             lv_anim_set_ready_cb(&a_out_scale, cover_transition_out_ready_cb);
             lv_anim_start(&a_out_scale);
 #elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
-            // For pure fade, the opacity animation itself triggers the ready callback
             lv_anim_t a_out_opa_main;
             lv_anim_init(&a_out_opa_main);
             lv_anim_set_var(&a_out_opa_main, ui_ctx.cover_img);
@@ -484,7 +449,6 @@ void ui_notify_track_started(const char *path,
             lv_anim_start(&a_out_opa_main);
 #endif
 
-            // Fade out Opacity (Common for Slide and Zoom modes)
 #if COVER_TRANSITION_MODE != COVER_TRANSITION_FADE
             lv_anim_t a_out_opa;
             lv_anim_init(&a_out_opa);
@@ -498,15 +462,13 @@ void ui_notify_track_started(const char *path,
     }
     else
     {
-        // No cover art: show vinyl placeholder
         lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_scale_anim_cb);
 
-        // Reset cover_img state just in case
         lv_obj_set_style_translate_x(ui_ctx.cover_img, 0, LV_PART_MAIN);
-        lv_obj_set_style_opa(ui_ctx.cover_img, 255, LV_PART_MAIN);
-        set_cover_scale(ui_ctx.cover_img, 256);
+        lv_obj_set_style_opa(ui_ctx.cover_img, LV_OPA_COVER, LV_PART_MAIN);
+        lv_image_set_scale(ui_ctx.cover_img, 256);
 
         lv_obj_clear_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
@@ -520,9 +482,7 @@ void ui_notify_track_started(const char *path,
     ui_ctx.elapsed_duration_sec = 0;
 
     char buf[16];
-    snprintf(buf, sizeof(buf), "%02lu:%02lu",
-             (unsigned long)(duration_sec / 60),
-             (unsigned long)(duration_sec % 60));
+    snprintf(buf, sizeof(buf), "%02u:%02u", duration_sec / 60, duration_sec % 60);
     lv_label_set_text(ui_ctx.total_label, buf);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
@@ -540,5 +500,6 @@ void ui_notify_track_started(const char *path,
 
 void ui_notify_track_finished(const char *path)
 {
+    (void)path;
     // Seamless transition
 }
