@@ -41,6 +41,14 @@
 #define UI_EQ_COLOR_START 0x00FFFF
 #define UI_EQ_COLOR_END 0xE600B3
 
+/* Cover Transition Configuration */
+#define COVER_TRANSITION_SLIDE 0
+#define COVER_TRANSITION_FADE 1
+#define COVER_TRANSITION_ZOOM 2
+
+/* Select the transition effect here */
+#define COVER_TRANSITION_MODE COVER_TRANSITION_SLIDE
+
 typedef struct
 {
     lv_obj_t *scr;
@@ -222,11 +230,11 @@ void ui_init(void)
 
 #if LVGL_VERSION_MAJOR >= 9
     ui_ctx.cover_img = lv_image_create(ui_ctx.scr);
-    lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_STRETCH);
+    /* Changed from LV_IMAGE_ALIGN_STRETCH to LV_IMAGE_ALIGN_CENTER to allow zoom/scale transformations */
+    lv_image_set_inner_align(ui_ctx.cover_img, LV_IMAGE_ALIGN_CENTER);
 #else
     ui_ctx.cover_img = lv_img_create(ui_ctx.scr);
 #endif
-
     lv_obj_set_size(ui_ctx.cover_img, 140, 140); // Enlarged
     lv_obj_align(ui_ctx.cover_img, LV_ALIGN_TOP_MID, 0, 20);
     lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
@@ -239,10 +247,7 @@ void ui_init(void)
     lv_label_set_long_mode(ui_ctx.track_label, LV_LABEL_LONG_SCROLL_CIRC_COMPAT);
     lv_obj_set_style_text_align(ui_ctx.track_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_ctx.track_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
-
-    // Set a slightly bigger font (Ensure LV_FONT_MONTSERRAT_16 is set to 1 in your lv_conf.h)
     lv_obj_set_style_text_font(ui_ctx.track_label, &lv_font_montserrat_16, LV_PART_MAIN);
-
     lv_obj_set_style_anim_time(ui_ctx.track_label, 10000, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.track_label, "Waiting for track...");
     lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 175);
@@ -252,7 +257,7 @@ void ui_init(void)
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_obj_set_style_text_color(ui_ctx.elapsed_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
     lv_obj_set_size(ui_ctx.elapsed_label, 40, LV_SIZE_CONTENT);
-    lv_obj_align(ui_ctx.elapsed_label, LV_ALIGN_TOP_LEFT, 20, 200); // Shifted Y from 215 to 200
+    lv_obj_align(ui_ctx.elapsed_label, LV_ALIGN_TOP_LEFT, 20, 200);
 
     // --- Total Time Label ---
     ui_ctx.total_label = lv_label_create(ui_ctx.scr);
@@ -260,12 +265,12 @@ void ui_init(void)
     lv_obj_set_style_text_color(ui_ctx.total_label, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
     lv_obj_set_size(ui_ctx.total_label, 40, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(ui_ctx.total_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_align(ui_ctx.total_label, LV_ALIGN_TOP_RIGHT, -20, 200); // Shifted Y from 215 to 200
+    lv_obj_align(ui_ctx.total_label, LV_ALIGN_TOP_RIGHT, -20, 200);
 
     // --- Progress Bar ---
     ui_ctx.progress_bar = lv_bar_create(ui_ctx.scr);
     lv_obj_set_size(ui_ctx.progress_bar, 112, 4);
-    lv_obj_align(ui_ctx.progress_bar, LV_ALIGN_TOP_MID, 0, 204); // Shifted Y from 219 to 204
+    lv_obj_align(ui_ctx.progress_bar, LV_ALIGN_TOP_MID, 0, 204);
     lv_obj_set_style_bg_color(ui_ctx.progress_bar, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
     lv_obj_set_style_bg_color(ui_ctx.progress_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_radius(ui_ctx.progress_bar, 2, LV_PART_MAIN);
@@ -274,7 +279,6 @@ void ui_init(void)
 
     int total_w = UI_EQ_BAR_COUNT * UI_EQ_BAR_WIDTH + (UI_EQ_BAR_COUNT - 1) * UI_EQ_BAR_GAP;
     int start_x = (LCD_H_RES - total_w) / 2;
-
     for (int i = 0; i < UI_EQ_BAR_COUNT; i++)
     {
         ui_ctx.eq_bars[i] = lv_obj_create(ui_ctx.scr);
@@ -303,24 +307,70 @@ void ui_set_status(const char *text)
 static const void *pending_cover_src = NULL;
 static bool is_first_cover_shown = false;
 
-// Callback for horizontal sliding
+// --- Animation Callbacks ---
 static void cover_translate_x_cb(void *var, int32_t v)
 {
     lv_obj_set_style_translate_x((lv_obj_t *)var, v, LV_PART_MAIN);
 }
 
-// Callback for opacity
 static void cover_opa_anim_cb(void *var, int32_t v)
 {
     lv_obj_set_style_opa((lv_obj_t *)var, v, LV_PART_MAIN);
 }
 
-// Called when the slide-out animation finishes
-static void cover_slide_out_ready_cb(lv_anim_t *a)
+static void set_cover_scale(lv_obj_t *obj, int32_t v)
+{
+#if LVGL_VERSION_MAJOR >= 9
+    lv_image_set_scale(obj, v);
+#else
+    lv_img_set_zoom(obj, v);
+#endif
+}
+
+static void cover_scale_anim_cb(void *var, int32_t v)
+{
+    set_cover_scale((lv_obj_t *)var, v);
+}
+
+// Helper to start the "Slide/Zoom/Fade In" animation
+static void start_cover_in_animation(uint32_t duration)
+{
+    lv_anim_t a_in;
+
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
+    lv_anim_init(&a_in);
+    lv_anim_set_var(&a_in, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in, -150, 0);
+    lv_anim_set_duration(&a_in, duration);
+    lv_anim_set_exec_cb(&a_in, cover_translate_x_cb);
+    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
+    lv_anim_start(&a_in);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+    lv_anim_init(&a_in);
+    lv_anim_set_var(&a_in, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in, 0, 256); // 256 is 100% scale in LVGL
+    lv_anim_set_duration(&a_in, duration);
+    lv_anim_set_exec_cb(&a_in, cover_scale_anim_cb);
+    lv_anim_set_path_cb(&a_in, lv_anim_path_ease_out);
+    lv_anim_start(&a_in);
+#endif
+
+    // Fade in Opacity (Applied to all modes for a smoother look)
+    lv_anim_t a_in_opa;
+    lv_anim_init(&a_in_opa);
+    lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
+    lv_anim_set_values(&a_in_opa, 0, 255);
+    lv_anim_set_duration(&a_in_opa, duration);
+    lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
+    lv_anim_start(&a_in_opa);
+}
+
+// Called when the "out" animation finishes
+static void cover_transition_out_ready_cb(lv_anim_t *a)
 {
     if (pending_cover_src)
     {
-        // 1. Swap the image source while it's invisible and off-screen
+        // 1. Swap the image source while it's invisible
 #if LVGL_VERSION_MAJOR >= 9
         lv_image_set_src(ui_ctx.cover_img, pending_cover_src);
         lv_image_set_scale(ui_ctx.cover_img, 256);
@@ -330,27 +380,19 @@ static void cover_slide_out_ready_cb(lv_anim_t *a)
 #endif
         pending_cover_src = NULL;
 
-        // 2. Move it to the LEFT off-screen (-150px) and keep it invisible
+        // 2. Prepare initial state for the "in" animation based on mode
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
         lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
         lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+        set_cover_scale(ui_ctx.cover_img, 0);
+        lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#endif
 
-        // 3. Start the Slide-In animation
-        lv_anim_t a_in_x, a_in_opa;
-
-        lv_anim_init(&a_in_x);
-        lv_anim_set_var(&a_in_x, ui_ctx.cover_img);
-        lv_anim_set_values(&a_in_x, -150, 0); // From left off-screen to center
-        lv_anim_set_duration(&a_in_x, 350);
-        lv_anim_set_exec_cb(&a_in_x, cover_translate_x_cb);
-        lv_anim_set_path_cb(&a_in_x, lv_anim_path_ease_out);
-        lv_anim_start(&a_in_x);
-
-        lv_anim_init(&a_in_opa);
-        lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
-        lv_anim_set_values(&a_in_opa, 0, 255);
-        lv_anim_set_duration(&a_in_opa, 350);
-        lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
-        lv_anim_start(&a_in_opa);
+        // 3. Start the "in" animation
+        start_cover_in_animation(350);
     }
 }
 
@@ -362,14 +404,10 @@ void ui_notify_track_started(const char *path,
 {
     (void)index;
     (void)count;
-
     if (!path || !ui_ctx.track_label)
     {
         return;
     }
-
-    // Check if this is the first time the cover image is being shown
-    bool is_first_time = lv_obj_has_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
 
     if (cover_src)
     {
@@ -379,13 +417,22 @@ void ui_notify_track_started(const char *path,
         // Cancel any ongoing animations to prevent conflicts
         lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
+        lv_anim_delete(ui_ctx.cover_img, cover_scale_anim_cb);
 
         if (!is_first_cover_shown)
         {
-            // First track: Start from left off-screen, set source, and slide in
+            // First track: Setup initial state and slide/scale/fade in
             is_first_cover_shown = true;
+
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
             lv_obj_set_style_translate_x(ui_ctx.cover_img, -150, LV_PART_MAIN);
             lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
+            lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+            set_cover_scale(ui_ctx.cover_img, 0);
+            lv_obj_set_style_opa(ui_ctx.cover_img, 0, LV_PART_MAIN);
+#endif
 
 #if LVGL_VERSION_MAJOR >= 9
             lv_image_set_src(ui_ctx.cover_img, cover_src);
@@ -394,52 +441,59 @@ void ui_notify_track_started(const char *path,
             lv_img_set_src(ui_ctx.cover_img, cover_src);
             lv_img_set_zoom(ui_ctx.cover_img, LV_IMG_ZOOM_NONE);
 #endif
-
-            lv_anim_t a_in_x, a_in_opa;
-
-            lv_anim_init(&a_in_x);
-            lv_anim_set_var(&a_in_x, ui_ctx.cover_img);
-            lv_anim_set_values(&a_in_x, -150, 0);
-            lv_anim_set_duration(&a_in_x, 500); // Slightly slower for the intro
-            lv_anim_set_exec_cb(&a_in_x, cover_translate_x_cb);
-            lv_anim_set_path_cb(&a_in_x, lv_anim_path_ease_out);
-            lv_anim_start(&a_in_x);
-
-            lv_anim_init(&a_in_opa);
-            lv_anim_set_var(&a_in_opa, ui_ctx.cover_img);
-            lv_anim_set_values(&a_in_opa, 0, 255);
-            lv_anim_set_duration(&a_in_opa, 500);
-            lv_anim_set_exec_cb(&a_in_opa, cover_opa_anim_cb);
-            lv_anim_start(&a_in_opa);
+            // Slightly slower for the intro
+            start_cover_in_animation(350);
         }
         else
         {
-            // Subsequent tracks: Slide out to the right
+            // Subsequent tracks: Trigger "out" animation based on mode
             pending_cover_src = cover_src;
-
-            // Get current position in case we are interrupting a previous animation
-            int32_t current_x = lv_obj_get_style_translate_x(ui_ctx.cover_img, LV_PART_MAIN);
             int32_t current_opa = lv_obj_get_style_opa(ui_ctx.cover_img, LV_PART_MAIN);
 
-            lv_anim_t a_out_x, a_out_opa;
-
-            // Slide out X
+#if COVER_TRANSITION_MODE == COVER_TRANSITION_SLIDE
+            int32_t current_x = lv_obj_get_style_translate_x(ui_ctx.cover_img, LV_PART_MAIN);
+            lv_anim_t a_out_x;
             lv_anim_init(&a_out_x);
             lv_anim_set_var(&a_out_x, ui_ctx.cover_img);
             lv_anim_set_values(&a_out_x, current_x, 150); // Slide to right off-screen
             lv_anim_set_duration(&a_out_x, 300);
             lv_anim_set_exec_cb(&a_out_x, cover_translate_x_cb);
             lv_anim_set_path_cb(&a_out_x, lv_anim_path_ease_in);
-            lv_anim_set_ready_cb(&a_out_x, cover_slide_out_ready_cb); // Trigger swap
+            lv_anim_set_ready_cb(&a_out_x, cover_transition_out_ready_cb);
             lv_anim_start(&a_out_x);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_ZOOM
+            lv_anim_t a_out_scale;
+            lv_anim_init(&a_out_scale);
+            lv_anim_set_var(&a_out_scale, ui_ctx.cover_img);
+            lv_anim_set_values(&a_out_scale, 256, 0); // Scale down to 0
+            lv_anim_set_duration(&a_out_scale, 300);
+            lv_anim_set_exec_cb(&a_out_scale, cover_scale_anim_cb);
+            lv_anim_set_path_cb(&a_out_scale, lv_anim_path_ease_in);
+            lv_anim_set_ready_cb(&a_out_scale, cover_transition_out_ready_cb);
+            lv_anim_start(&a_out_scale);
+#elif COVER_TRANSITION_MODE == COVER_TRANSITION_FADE
+            // For pure fade, the opacity animation itself triggers the ready callback
+            lv_anim_t a_out_opa_main;
+            lv_anim_init(&a_out_opa_main);
+            lv_anim_set_var(&a_out_opa_main, ui_ctx.cover_img);
+            lv_anim_set_values(&a_out_opa_main, current_opa, 0);
+            lv_anim_set_duration(&a_out_opa_main, 300);
+            lv_anim_set_exec_cb(&a_out_opa_main, cover_opa_anim_cb);
+            lv_anim_set_path_cb(&a_out_opa_main, lv_anim_path_ease_in);
+            lv_anim_set_ready_cb(&a_out_opa_main, cover_transition_out_ready_cb);
+            lv_anim_start(&a_out_opa_main);
+#endif
 
-            // Fade out Opacity
+            // Fade out Opacity (Common for Slide and Zoom modes)
+#if COVER_TRANSITION_MODE != COVER_TRANSITION_FADE
+            lv_anim_t a_out_opa;
             lv_anim_init(&a_out_opa);
             lv_anim_set_var(&a_out_opa, ui_ctx.cover_img);
             lv_anim_set_values(&a_out_opa, current_opa, 0);
             lv_anim_set_duration(&a_out_opa, 300);
             lv_anim_set_exec_cb(&a_out_opa, cover_opa_anim_cb);
             lv_anim_start(&a_out_opa);
+#endif
         }
     }
     else
@@ -447,10 +501,12 @@ void ui_notify_track_started(const char *path,
         // No cover art: show vinyl placeholder
         lv_anim_delete(ui_ctx.cover_img, cover_translate_x_cb);
         lv_anim_delete(ui_ctx.cover_img, cover_opa_anim_cb);
+        lv_anim_delete(ui_ctx.cover_img, cover_scale_anim_cb);
 
         // Reset cover_img state just in case
         lv_obj_set_style_translate_x(ui_ctx.cover_img, 0, LV_PART_MAIN);
         lv_obj_set_style_opa(ui_ctx.cover_img, 255, LV_PART_MAIN);
+        set_cover_scale(ui_ctx.cover_img, 256);
 
         lv_obj_clear_flag(ui_ctx.artwork_card, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_ctx.cover_img, LV_OBJ_FLAG_HIDDEN);
