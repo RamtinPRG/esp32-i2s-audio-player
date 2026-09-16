@@ -51,6 +51,14 @@ typedef struct
     lv_obj_t *progress_bar;
     lv_obj_t *total_label;
     lv_obj_t *eq_bars[UI_EQ_BAR_COUNT];
+
+    /* New UX Elements */
+    lv_obj_t *play_pause_label;
+    lv_obj_t *vol_overlay;
+    lv_obj_t *vol_bar;
+    lv_obj_t *vol_label;
+    lv_obj_t *vol_icon;
+
     bool eq_anim_active;
     lv_timer_t *progress_timer;
     uint32_t total_duration_sec;
@@ -185,7 +193,7 @@ static void progress_timer_cb(lv_timer_t *timer)
     {
         ui_ctx.elapsed_duration_sec++;
         char buf[16];
-        snprintf(buf, sizeof(buf), "%02u:%02u",
+        snprintf(buf, sizeof(buf), "%02lu:%02lu",
                  ui_ctx.elapsed_duration_sec / 60,
                  ui_ctx.elapsed_duration_sec % 60);
 
@@ -325,6 +333,13 @@ void ui_init(void)
     lv_label_set_text(ui_ctx.track_label, "Waiting for track...");
     lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 175);
 
+    /* Play/Pause Indicator */
+    ui_ctx.play_pause_label = lv_label_create(ui_ctx.scr);
+    lv_obj_set_style_text_color(ui_ctx.play_pause_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.play_pause_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.play_pause_label, LV_SYMBOL_PLAY);
+    lv_obj_align(ui_ctx.play_pause_label, LV_ALIGN_TOP_LEFT, 20, 175);
+
     /* Timers & Progress Bar */
     ui_ctx.elapsed_label = lv_label_create(ui_ctx.scr);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
@@ -365,6 +380,38 @@ void ui_init(void)
         lv_obj_set_style_radius(ui_ctx.eq_bars[i], UI_EQ_BAR_WIDTH / 2, LV_PART_MAIN);
         lv_obj_set_style_border_width(ui_ctx.eq_bars[i], 0, LV_PART_MAIN);
     }
+
+    /* Volume Overlay (Hidden by default) */
+    ui_ctx.vol_overlay = lv_obj_create(ui_ctx.scr);
+    no_scroll(ui_ctx.vol_overlay);
+    lv_obj_set_size(ui_ctx.vol_overlay, 200, 60);
+    lv_obj_align(ui_ctx.vol_overlay, LV_ALIGN_BOTTOM_MID, 0, -40);
+    lv_obj_set_style_bg_color(ui_ctx.vol_overlay, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_ctx.vol_overlay, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.vol_overlay, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_color(ui_ctx.vol_overlay, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui_ctx.vol_overlay, 1, LV_PART_MAIN);
+    lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    ui_ctx.vol_icon = lv_label_create(ui_ctx.vol_overlay);
+    lv_obj_set_style_text_color(ui_ctx.vol_icon, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.vol_icon, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.vol_icon, LV_SYMBOL_VOLUME_MAX);
+    lv_obj_align(ui_ctx.vol_icon, LV_ALIGN_LEFT_MID, 15, 0);
+
+    ui_ctx.vol_bar = lv_bar_create(ui_ctx.vol_overlay);
+    lv_obj_set_size(ui_ctx.vol_bar, 120, 8);
+    lv_obj_align(ui_ctx.vol_bar, LV_ALIGN_LEFT_MID, 45, -10);
+    lv_obj_set_style_bg_color(ui_ctx.vol_bar, lv_color_hex(COLOR_BG), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui_ctx.vol_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(ui_ctx.vol_bar, 4, LV_PART_MAIN);
+    lv_bar_set_value(ui_ctx.vol_bar, 80, LV_ANIM_OFF);
+
+    ui_ctx.vol_label = lv_label_create(ui_ctx.vol_overlay);
+    lv_obj_set_style_text_color(ui_ctx.vol_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.vol_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.vol_label, "80%");
+    lv_obj_align(ui_ctx.vol_label, LV_ALIGN_LEFT_MID, 45, 10);
 
     ui_ctx.progress_timer = lv_timer_create(progress_timer_cb, 1000, NULL);
 }
@@ -482,7 +529,7 @@ void ui_notify_track_started(const char *path, const void *cover_src, int index,
     ui_ctx.elapsed_duration_sec = 0;
 
     char buf[16];
-    snprintf(buf, sizeof(buf), "%02u:%02u", duration_sec / 60, duration_sec % 60);
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", duration_sec / 60, duration_sec % 60);
     lv_label_set_text(ui_ctx.total_label, buf);
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
@@ -502,4 +549,79 @@ void ui_notify_track_finished(const char *path)
 {
     (void)path;
     // Seamless transition
+}
+
+/* --------------------------------------------------------------------------
+ * New UX Functions for Two-Mode State Machine
+ * -------------------------------------------------------------------------- */
+
+void ui_show_volume_mode(bool show)
+{
+    if (ui_ctx.vol_overlay)
+    {
+        if (show)
+        {
+            lv_obj_clear_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+        else
+        {
+            lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+void ui_update_volume(uint8_t volume)
+{
+    if (ui_ctx.vol_bar)
+    {
+        lv_bar_set_value(ui_ctx.vol_bar, volume, LV_ANIM_ON);
+    }
+    if (ui_ctx.vol_label)
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%u%%", volume);
+        lv_label_set_text(ui_ctx.vol_label, buf);
+    }
+    if (ui_ctx.vol_icon)
+    {
+        const char *icon = LV_SYMBOL_VOLUME_MAX;
+        if (volume == 0)
+            icon = LV_SYMBOL_MUTE;
+        else if (volume < 50)
+            icon = LV_SYMBOL_VOLUME_MID;
+        else
+            icon = LV_SYMBOL_VOLUME_MAX;
+
+        lv_label_set_text(ui_ctx.vol_icon, icon);
+        lv_obj_set_style_text_color(ui_ctx.vol_icon, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+    }
+}
+
+void ui_update_mute(bool mute)
+{
+    if (ui_ctx.vol_icon)
+    {
+        if (mute)
+        {
+            lv_label_set_text(ui_ctx.vol_icon, LV_SYMBOL_MUTE);
+            lv_obj_set_style_text_color(ui_ctx.vol_icon, lv_color_hex(COLOR_ERROR), LV_PART_MAIN);
+        }
+        else
+        {
+            // Restore accent color (icon text will be corrected by ui_update_volume if needed)
+            lv_obj_set_style_text_color(ui_ctx.vol_icon, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+        }
+    }
+    if (ui_ctx.vol_label && mute)
+    {
+        lv_label_set_text(ui_ctx.vol_label, "MUTED");
+    }
+}
+
+void ui_update_playback(bool playing)
+{
+    if (ui_ctx.play_pause_label)
+    {
+        lv_label_set_text(ui_ctx.play_pause_label, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    }
 }

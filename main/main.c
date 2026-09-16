@@ -28,6 +28,10 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "iot_knob.h"
+#include "iot_button.h"
+#include "button_gpio.h"
 
 #include "sdkconfig.h"
 
@@ -53,6 +57,16 @@ static const char *TAG = "I2S_SD";
 #define SD_PIN_CLK 6
 #define SD_PIN_CS 7
 #define SD_MOUNT_POINT "/sdcard"
+
+/* Rotary encoder pins */
+#define ENCODER_PIN_A 16
+#define ENCODER_PIN_B 17
+#define ENCODER_PIN_SW 18
+
+/* Encoder behavior */
+#define VOLUME_STEP 1
+#define VOLUME_AUTO_HIDE_US (3000000LL) /* 3 seconds */
+#define LONG_PRESS_GUARD_US (500000LL)  /* suppress short press after long press */
 
 /* Audio buffer settings */
 #define AUDIO_BUFF_SIZE 4096
@@ -93,6 +107,451 @@ typedef struct
     int count;
     int current_index;
 } playlist_t;
+
+/* --------------------------------------------------------------------------
+ * Encoder / UI mode state machine
+ * -------------------------------------------------------------------------- */
+
+typedef enum
+{
+    INPUT_EVT_ROTATE_CW = 0,
+    INPUT_EVT_ROTATE_CCW,
+    INPUT_EVT_SHORT_PRESS,
+    INPUT_EVT_LONG_PRESS,
+    INPUT_EVT_AUTO_HIDE_VOLUME,
+} input_event_t;
+
+typedef enum
+{
+    PLAYER_CMD_NEXT = 0,
+    PLAYER_CMD_PREV,
+    PLAYER_CMD_TOGGLE_PLAY,
+} player_cmd_t;
+
+typedef enum
+{
+    UI_MODE_TRACK = 0,
+    UI_MODE_VOLUME,
+} ui_mode_t;
+
+static QueueHandle_t input_event_queue = NULL;
+static QueueHandle_t player_cmd_queue = NULL;
+static esp_timer_handle_t volume_autohide_timer = NULL;
+
+static ui_mode_t ui_mode = UI_MODE_TRACK;
+
+static volatile uint8_t app_volume = 100;
+static volatile bool app_mute = false;
+static volatile bool app_playing = true;
+
+static int64_t last_volume_activity_us = 0;
+
+/* --------------------------------------------------------------------------
+ * Encoder input helpers
+ * -------------------------------------------------------------------------- */
+
+static void post_input_event(input_event_t evt)
+{
+    if (input_event_queue == NULL)
+    {
+        return;
+    }
+
+    if (xPortInIsrContext() == pdTRUE)
+    {
+        BaseType_t higher_woken = pdFALSE;
+        xQueueSendFromISR(input_event_queue, &evt, &higher_woken);
+        if (higher_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+    else
+    {
+        xQueueSend(input_event_queue, &evt, 0);
+    }
+}
+
+static void send_player_cmd(player_cmd_t cmd)
+{
+    if (player_cmd_queue == NULL)
+    {
+        return;
+    }
+
+    /*
+     * Use zero timeout so the input task never blocks.
+     * If the queue is full, dropping one encoder command is usually preferable
+     * to blocking the UI/input task.
+     */
+    xQueueSend(player_cmd_queue, &cmd, 0);
+}
+
+static void ui_apply_volume_and_mute(void)
+{
+    if (lvgl_port_lock(200))
+    {
+        ui_update_volume(app_volume);
+        ui_update_mute(app_mute);
+        lvgl_port_unlock();
+    }
+}
+
+static void volume_autohide_timer_cb(void *arg)
+{
+    (void)arg;
+    post_input_event(INPUT_EVT_AUTO_HIDE_VOLUME);
+}
+
+static void volume_activity(void)
+{
+    last_volume_activity_us = esp_timer_get_time();
+
+    if (volume_autohide_timer != NULL)
+    {
+        esp_timer_stop(volume_autohide_timer);
+        esp_timer_start_once(volume_autohide_timer, VOLUME_AUTO_HIDE_US);
+    }
+}
+
+static void enter_volume_mode(void)
+{
+    ui_mode = UI_MODE_VOLUME;
+
+    if (lvgl_port_lock(500))
+    {
+        ui_show_volume_mode(true);
+        ui_update_volume(app_volume);
+        ui_update_mute(app_mute);
+        lvgl_port_unlock();
+    }
+
+    volume_activity();
+}
+
+static void exit_volume_mode(void)
+{
+    if (ui_mode != UI_MODE_VOLUME)
+    {
+        return;
+    }
+
+    ui_mode = UI_MODE_TRACK;
+
+    if (volume_autohide_timer != NULL)
+    {
+        esp_timer_stop(volume_autohide_timer);
+    }
+
+    if (lvgl_port_lock(500))
+    {
+        ui_show_volume_mode(false);
+        lvgl_port_unlock();
+    }
+}
+
+static void change_volume(int delta)
+{
+    int v = (int)app_volume + delta;
+
+    if (v < 0)
+    {
+        v = 0;
+    }
+
+    if (v > 100)
+    {
+        v = 100;
+    }
+
+    app_volume = (uint8_t)v;
+
+    /*
+     * Optional UX choice:
+     * If the user rotates while muted, assume they want audible volume again.
+     * Remove this if you want mute to remain sticky.
+     */
+    if (app_mute)
+    {
+        app_mute = false;
+    }
+
+    ui_apply_volume_and_mute();
+}
+
+static void toggle_mute(void)
+{
+    app_mute = !app_mute;
+    ui_apply_volume_and_mute();
+}
+
+/* --------------------------------------------------------------------------
+ * Input control task
+ * -------------------------------------------------------------------------- */
+
+static void input_control_task(void *arg)
+{
+    (void)arg;
+
+    input_event_t evt;
+    int64_t last_long_press_us = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(input_event_queue, &evt, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        int64_t now = esp_timer_get_time();
+
+        if (evt == INPUT_EVT_LONG_PRESS)
+        {
+            last_long_press_us = now;
+        }
+
+        /*
+         * Some knob/button stacks can emit a short-press event after a long press
+         * release. Ignore short presses that occur immediately after a long press.
+         */
+        if (evt == INPUT_EVT_SHORT_PRESS &&
+            (now - last_long_press_us) < LONG_PRESS_GUARD_US)
+        {
+            continue;
+        }
+
+        if (ui_mode == UI_MODE_TRACK)
+        {
+            switch (evt)
+            {
+            case INPUT_EVT_ROTATE_CW:
+                ESP_LOGI(TAG, "Encoder: next track");
+                send_player_cmd(PLAYER_CMD_NEXT);
+                break;
+
+            case INPUT_EVT_ROTATE_CCW:
+                ESP_LOGI(TAG, "Encoder: previous track");
+                send_player_cmd(PLAYER_CMD_PREV);
+                break;
+
+            case INPUT_EVT_SHORT_PRESS:
+                ESP_LOGI(TAG, "Encoder: play/pause");
+                send_player_cmd(PLAYER_CMD_TOGGLE_PLAY);
+                break;
+
+            case INPUT_EVT_LONG_PRESS:
+                ESP_LOGI(TAG, "Encoder: enter volume mode");
+                enter_volume_mode();
+                break;
+
+            default:
+                break;
+            }
+        }
+        else /* UI_MODE_VOLUME */
+        {
+            switch (evt)
+            {
+            case INPUT_EVT_ROTATE_CW:
+                ESP_LOGI(TAG, "Encoder: volume up");
+                change_volume(VOLUME_STEP);
+                volume_activity();
+                break;
+
+            case INPUT_EVT_ROTATE_CCW:
+                ESP_LOGI(TAG, "Encoder: volume down");
+                change_volume(-VOLUME_STEP);
+                volume_activity();
+                break;
+
+            case INPUT_EVT_SHORT_PRESS:
+                ESP_LOGI(TAG, "Encoder: mute/unmute");
+                toggle_mute();
+
+                /*
+                 * If you want auto-hide to reset only on rotation,
+                 * remove this call.
+                 */
+                volume_activity();
+                break;
+
+            case INPUT_EVT_LONG_PRESS:
+                ESP_LOGI(TAG, "Encoder: exit volume mode");
+                exit_volume_mode();
+                break;
+
+            case INPUT_EVT_AUTO_HIDE_VOLUME:
+                /*
+                 * Guard against stale timer events: only exit if there really
+                 * has been no recent volume activity.
+                 */
+                if ((now - last_volume_activity_us) >= VOLUME_AUTO_HIDE_US)
+                {
+                    ESP_LOGI(TAG, "Encoder: auto-hide volume mode");
+                    exit_volume_mode();
+                }
+                break;
+
+            default:
+                break;
+            }
+        }
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Knob callbacks
+ * -------------------------------------------------------------------------- */
+
+static void knob_left_cb(void *knob_handle, void *user_data)
+{
+    (void)knob_handle;
+    (void)user_data;
+
+    /*
+     * KNOB_LEFT is usually counter-clockwise.
+     * If your encoder direction is reversed, either swap these two callbacks
+     * or swap encoder A/B pins.
+     */
+    post_input_event(INPUT_EVT_ROTATE_CCW);
+}
+
+static void knob_right_cb(void *knob_handle, void *user_data)
+{
+    (void)knob_handle;
+    (void)user_data;
+
+    post_input_event(INPUT_EVT_ROTATE_CW);
+}
+
+static void knob_short_press_cb(void *knob_handle, void *user_data)
+{
+    (void)knob_handle;
+    (void)user_data;
+
+    post_input_event(INPUT_EVT_SHORT_PRESS);
+}
+
+static void knob_long_press_cb(void *knob_handle, void *user_data)
+{
+    (void)knob_handle;
+    (void)user_data;
+
+    post_input_event(INPUT_EVT_LONG_PRESS);
+}
+
+/* --------------------------------------------------------------------------
+Encoder and Button init
+-------------------------------------------------------------------------- */
+static void encoder_input_init(void)
+{
+    /* Auto-hide timer for Volume Mode */
+    const esp_timer_create_args_t timer_args = {
+        .callback = volume_autohide_timer_cb,
+        .name = "volume_autohide",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &volume_autohide_timer));
+
+    /* 1. Initialize Knob for Rotation (CW/CCW) */
+    knob_config_t knob_cfg = {
+        .gpio_encoder_a = ENCODER_PIN_A,
+        .gpio_encoder_b = ENCODER_PIN_B,
+        .default_direction = 0,
+    };
+    knob_handle_t knob = iot_knob_create(&knob_cfg);
+    ESP_ERROR_CHECK(knob == NULL ? ESP_FAIL : ESP_OK);
+
+    ESP_ERROR_CHECK(iot_knob_register_cb(knob, KNOB_LEFT, knob_left_cb, NULL));
+    ESP_ERROR_CHECK(iot_knob_register_cb(knob, KNOB_RIGHT, knob_right_cb, NULL));
+
+    /* 2. Initialize Button for Encoder Switch (Short/Long Press) */
+    const button_config_t btn_cfg = {
+        .long_press_time = 1500, /* 1.5s for long press */
+        .short_press_time = 800, /* 0.8s for short press */
+    };
+    const button_gpio_config_t btn_gpio_cfg = {
+        .gpio_num = ENCODER_PIN_SW,
+        .active_level = 0, /* Set to 1 if your encoder switch is active-high */
+    };
+    button_handle_t btn;
+    ESP_ERROR_CHECK(iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &btn));
+
+    /* Register short press (single click) and long press callbacks */
+    /* Note: passing NULL for event_args uses the default times defined in btn_cfg */
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_SINGLE_CLICK, NULL, knob_short_press_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_LONG_PRESS_START, NULL, knob_long_press_cb, NULL));
+
+    xTaskCreate(input_control_task, "input_ctrl", 6144, NULL, 6, NULL);
+    ESP_LOGI(TAG, "Encoder rotation and button input initialized");
+}
+
+/* --------------------------------------------------------------------------
+ * Audio control helpers
+ * -------------------------------------------------------------------------- */
+
+static void flush_audio_data_queue(void)
+{
+    audio_buffer_t tmp;
+
+    /*
+     * Move any queued full audio buffers back to the free queue.
+     *
+     * This is used for:
+     * - pause
+     * - next track
+     * - previous track
+     *
+     * A few samples may still be in the I2S DMA, but this keeps the skip
+     * latency low without needing to tear down the I2S channel.
+     */
+    while (xQueueReceive(audio_data_queue, &tmp, 0) == pdTRUE)
+    {
+        xQueueSend(free_buffer_queue, &tmp, pdMS_TO_TICKS(10));
+    }
+}
+
+static void apply_volume_to_buffer(audio_buffer_t *buf)
+{
+    if (buf == NULL || buf->data == NULL || buf->len == 0)
+    {
+        return;
+    }
+
+    bool mute = app_mute;
+    uint8_t volume = app_volume;
+
+    if (mute || volume == 0)
+    {
+        memset(buf->data, 0, buf->len);
+        return;
+    }
+
+    if (volume >= 100)
+    {
+        return;
+    }
+
+    int16_t *samples = (int16_t *)buf->data;
+    size_t sample_count = buf->len / sizeof(int16_t);
+
+    /*
+     * Simple linear volume:
+     *
+     *     out = in * volume / 100
+     *
+     * If you want a more perceptual volume curve, replace this with:
+     *
+     *     uint32_t gain = (volume * volume) / 100;
+     *
+     * or use a lookup table.
+     */
+    int32_t gain = volume * volume / 100;
+
+    for (size_t i = 0; i < sample_count; i++)
+    {
+        samples[i] = (int16_t)(((int32_t)samples[i] * gain) / 100);
+    }
+}
 
 /*
  * Initialize the Display Hardware and LVGL Port
@@ -341,7 +800,54 @@ static void sd_read_task(void *arg)
 
     while (1)
     {
-        // If no file is open, open the next one in the playlist
+        /* ------------------------------------------------------------
+         * Handle player commands from encoder/input task
+         * ------------------------------------------------------------ */
+        player_cmd_t cmd;
+
+        while (xQueueReceive(player_cmd_queue, &cmd, 0) == pdTRUE)
+        {
+            if (cmd == PLAYER_CMD_NEXT || cmd == PLAYER_CMD_PREV)
+            {
+                if (f != NULL)
+                {
+                    fclose(f);
+                    f = NULL;
+                }
+
+                flush_audio_data_queue();
+
+                if (cmd == PLAYER_CMD_NEXT)
+                {
+                    playlist->current_index =
+                        (playlist->current_index + 1) % playlist->count;
+                }
+                else
+                {
+                    playlist->current_index =
+                        (playlist->current_index - 1 + playlist->count) % playlist->count;
+                }
+            }
+            else if (cmd == PLAYER_CMD_TOGGLE_PLAY)
+            {
+                app_playing = !app_playing;
+
+                if (!app_playing)
+                {
+                    flush_audio_data_queue();
+                }
+
+                if (lvgl_port_lock(500))
+                {
+                    ui_update_playback(app_playing);
+                    lvgl_port_unlock();
+                }
+            }
+        }
+
+        /* ------------------------------------------------------------
+         * Open current track if needed
+         * ------------------------------------------------------------ */
         if (f == NULL)
         {
             const char *filepath = playlist->files[playlist->current_index];
@@ -380,17 +886,37 @@ static void sd_read_task(void *arg)
             if (lvgl_port_lock(500))
             {
                 ui_notify_track_started(filepath, img_arg, playlist->current_index + 1, playlist->count, duration_sec);
+
+                /*
+                 * If the user changed track while paused, keep the UI in the
+                 * paused state.
+                 */
+                ui_update_playback(app_playing);
+
                 lvgl_port_unlock();
             }
         }
 
-        /* Get an empty buffer */
+        /* ------------------------------------------------------------
+         * If paused, do not read more audio.
+         * ------------------------------------------------------------ */
+        if (!app_playing)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        /* ------------------------------------------------------------
+         * Get an empty buffer
+         * ------------------------------------------------------------ */
         if (xQueueReceive(free_buffer_queue, &buf, portMAX_DELAY) != pdTRUE)
         {
             continue;
         }
 
-        /* Read from SD card */
+        /* ------------------------------------------------------------
+         * Read from SD card
+         * ------------------------------------------------------------ */
         size_t bytes_read = fread(buf.data, 1, AUDIO_BUFF_SIZE, f);
 
         if (bytes_read == 0)
@@ -433,7 +959,10 @@ static void sd_read_task(void *arg)
  */
 static void i2s_write_task(void *arg)
 {
+    (void)arg;
+
     audio_buffer_t buf;
+
     ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
 
     while (1)
@@ -443,18 +972,28 @@ static void i2s_write_task(void *arg)
             continue;
         }
 
+        /* Apply software volume/mute */
+        apply_volume_to_buffer(&buf);
+
         size_t offset = 0;
+
         while (offset < buf.len)
         {
             size_t bytes_written = 0;
+
             esp_err_t ret = i2s_channel_write(
-                tx_chan, buf.data + offset, buf.len - offset, &bytes_written, portMAX_DELAY);
+                tx_chan,
+                buf.data + offset,
+                buf.len - offset,
+                &bytes_written,
+                portMAX_DELAY);
 
             if (ret != ESP_OK)
             {
                 ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
                 break;
             }
+
             offset += bytes_written;
         }
 
@@ -490,11 +1029,13 @@ void app_main(void)
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to build playlist. Halting.");
+
         if (lvgl_port_lock(500))
         {
             ui_set_status("No PCM files found!");
             lvgl_port_unlock();
         }
+
         return;
     }
 
@@ -522,6 +1063,13 @@ void app_main(void)
     assert(free_buffer_queue != NULL);
     assert(audio_data_queue != NULL);
 
+    /* Create encoder/input queues */
+    input_event_queue = xQueueCreate(32, sizeof(input_event_t));
+    player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
+
+    assert(input_event_queue != NULL);
+    assert(player_cmd_queue != NULL);
+
     /* Allocate DMA-capable audio buffers */
     for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
     {
@@ -534,11 +1082,18 @@ void app_main(void)
             abort();
         }
 
-        audio_buffer_t buf = {.data = mem, .len = 0};
+        audio_buffer_t buf = {
+            .data = mem,
+            .len = 0,
+        };
+
         xQueueSend(free_buffer_queue, &buf, 0);
     }
 
     /* Create tasks */
     xTaskCreate(sd_read_task, "sd_read_task", 8192, &playlist, 6, NULL);
     xTaskCreate(i2s_write_task, "i2s_write_task", 4096, NULL, 5, NULL);
+
+    /* Initialize encoder/input state machine */
+    encoder_input_init();
 }
