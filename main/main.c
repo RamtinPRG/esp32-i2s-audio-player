@@ -466,8 +466,8 @@ static void encoder_input_init(void)
 
     /* 2. Initialize Button for Encoder Switch (Short/Long Press) */
     const button_config_t btn_cfg = {
-        .long_press_time = 1500, /* 1.5s for long press */
-        .short_press_time = 800, /* 0.8s for short press */
+        .long_press_time = 0,  /* 1.5s for long press */
+        .short_press_time = 0, /* 0.8s for short press */
     };
     const button_gpio_config_t btn_gpio_cfg = {
         .gpio_num = ENCODER_PIN_SW,
@@ -832,10 +832,10 @@ static void sd_read_task(void *arg)
             {
                 app_playing = !app_playing;
 
-                if (!app_playing)
-                {
-                    flush_audio_data_queue();
-                }
+                // if (!app_playing)
+                // {
+                //     flush_audio_data_queue();
+                // }
 
                 if (lvgl_port_lock(500))
                 {
@@ -898,11 +898,21 @@ static void sd_read_task(void *arg)
         }
 
         /* ------------------------------------------------------------
-         * If paused, do not read more audio.
+         * If paused, send silence buffers to flush I2S DMA
          * ------------------------------------------------------------ */
         if (!app_playing)
         {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            if (xQueueReceive(free_buffer_queue, &buf, pdMS_TO_TICKS(10)) == pdTRUE)
+            {
+                memset(buf.data, 0, AUDIO_BUFF_SIZE);
+                buf.len = AUDIO_BUFF_SIZE;
+
+                if (xQueueSend(audio_data_queue, &buf, pdMS_TO_TICKS(10)) != pdTRUE)
+                {
+                    // Return buffer to free queue if send timed out
+                    xQueueSend(free_buffer_queue, &buf, 0);
+                }
+            }
             continue;
         }
 
