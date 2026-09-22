@@ -39,6 +39,11 @@
 /* Select the transition effect here */
 #define COVER_TRANSITION_MODE COVER_TRANSITION_SLIDE
 
+/* Playback overlay / pause badge */
+#define UI_PLAYBACK_OVERLAY_SIZE 56
+#define UI_PLAYBACK_SCALE_HIDDEN 192
+#define UI_PLAYBACK_SCALE_SHOWN 256
+
 typedef struct
 {
     lv_obj_t *scr;
@@ -53,7 +58,9 @@ typedef struct
     lv_obj_t *eq_bars[UI_EQ_BAR_COUNT];
 
     /* New UX Elements */
-    lv_obj_t *play_pause_label;
+    lv_obj_t *playback_overlay;
+    lv_obj_t *playback_icon;
+    bool playback_overlay_visible;
     lv_obj_t *vol_overlay;
     lv_obj_t *vol_bar;
     lv_obj_t *vol_label;
@@ -279,6 +286,113 @@ static void cover_transition_out_ready_cb(lv_anim_t *a)
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Playback overlay animation helpers
+ * -------------------------------------------------------------------------- */
+
+static void playback_overlay_opa_anim_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+static void playback_overlay_scale_anim_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_transform_scale((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+static void playback_overlay_hide_ready_cb(lv_anim_t *a)
+{
+    (void)a;
+
+    if (ui_ctx.playback_overlay)
+    {
+        lv_obj_add_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    ui_ctx.playback_overlay_visible = false;
+}
+
+static void show_playback_overlay(void)
+{
+    if (!ui_ctx.playback_overlay || !ui_ctx.playback_icon)
+    {
+        return;
+    }
+
+    lv_anim_delete(ui_ctx.playback_overlay, playback_overlay_opa_anim_cb);
+    lv_anim_delete(ui_ctx.playback_overlay, playback_overlay_scale_anim_cb);
+
+    lv_obj_clear_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_set_style_opa(ui_ctx.playback_overlay, LV_OPA_0, LV_PART_MAIN);
+    lv_obj_set_style_transform_scale(ui_ctx.playback_overlay, UI_PLAYBACK_SCALE_HIDDEN, LV_PART_MAIN);
+
+    lv_anim_t a_opa;
+    lv_anim_init(&a_opa);
+    lv_anim_set_var(&a_opa, ui_ctx.playback_overlay);
+    lv_anim_set_values(&a_opa, 0, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a_opa, playback_overlay_opa_anim_cb);
+    lv_anim_set_duration(&a_opa, 220);
+    lv_anim_set_path_cb(&a_opa, lv_anim_path_ease_out);
+    lv_anim_start(&a_opa);
+
+    lv_anim_t a_scale;
+    lv_anim_init(&a_scale);
+    lv_anim_set_var(&a_scale, ui_ctx.playback_overlay);
+    lv_anim_set_values(&a_scale, UI_PLAYBACK_SCALE_HIDDEN, UI_PLAYBACK_SCALE_SHOWN);
+    lv_anim_set_exec_cb(&a_scale, playback_overlay_scale_anim_cb);
+    lv_anim_set_duration(&a_scale, 220);
+    lv_anim_set_path_cb(&a_scale, lv_anim_path_ease_out);
+    lv_anim_start(&a_scale);
+
+    ui_ctx.playback_overlay_visible = true;
+}
+
+static void hide_playback_overlay(void)
+{
+    if (!ui_ctx.playback_overlay || !ui_ctx.playback_overlay_visible)
+    {
+        return;
+    }
+
+    lv_anim_delete(ui_ctx.playback_overlay, playback_overlay_opa_anim_cb);
+    lv_anim_delete(ui_ctx.playback_overlay, playback_overlay_scale_anim_cb);
+
+    int32_t start_opa = lv_obj_get_style_opa(ui_ctx.playback_overlay, LV_PART_MAIN);
+    int32_t start_scale = lv_obj_get_style_transform_scale_x(ui_ctx.playback_overlay, LV_PART_MAIN);
+
+    if (start_opa < 0 || start_opa > LV_OPA_COVER)
+    {
+        start_opa = LV_OPA_COVER;
+    }
+
+    if (start_scale <= 0)
+    {
+        start_scale = UI_PLAYBACK_SCALE_SHOWN;
+    }
+
+    lv_anim_t a_opa;
+    lv_anim_init(&a_opa);
+    lv_anim_set_var(&a_opa, ui_ctx.playback_overlay);
+    lv_anim_set_values(&a_opa, start_opa, 0);
+    lv_anim_set_exec_cb(&a_opa, playback_overlay_opa_anim_cb);
+    lv_anim_set_duration(&a_opa, 180);
+    lv_anim_set_path_cb(&a_opa, lv_anim_path_ease_in);
+    lv_anim_start(&a_opa);
+
+    lv_anim_t a_scale;
+    lv_anim_init(&a_scale);
+    lv_anim_set_var(&a_scale, ui_ctx.playback_overlay);
+    lv_anim_set_values(&a_scale, start_scale, UI_PLAYBACK_SCALE_HIDDEN);
+    lv_anim_set_exec_cb(&a_scale, playback_overlay_scale_anim_cb);
+    lv_anim_set_duration(&a_scale, 180);
+    lv_anim_set_path_cb(&a_scale, lv_anim_path_ease_in);
+    lv_anim_set_ready_cb(&a_scale, playback_overlay_hide_ready_cb);
+    lv_anim_start(&a_scale);
+
+    ui_ctx.playback_overlay_visible = false;
+}
+
 void ui_init(void)
 {
     ui_ctx.scr = lv_screen_active();
@@ -322,6 +436,32 @@ void ui_init(void)
     lv_obj_set_style_radius(ui_ctx.cover_img, 20, LV_PART_MAIN);
     lv_obj_set_style_clip_corner(ui_ctx.cover_img, true, LV_PART_MAIN);
 
+    /* Playback overlay badge centered over artwork / vinyl */
+    ui_ctx.playback_overlay = lv_obj_create(ui_ctx.scr);
+    no_scroll(ui_ctx.playback_overlay);
+
+    lv_obj_set_size(ui_ctx.playback_overlay, UI_PLAYBACK_OVERLAY_SIZE, UI_PLAYBACK_OVERLAY_SIZE);
+    lv_obj_align_to(ui_ctx.playback_overlay, ui_ctx.artwork_card, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_set_style_bg_color(ui_ctx.playback_overlay, lv_color_hex(COLOR_BG), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_ctx.playback_overlay, LV_OPA_60, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.playback_overlay, UI_PLAYBACK_OVERLAY_SIZE / 2, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui_ctx.playback_overlay, 0, LV_PART_MAIN);
+
+    lv_obj_set_style_opa(ui_ctx.playback_overlay, LV_OPA_0, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_x(ui_ctx.playback_overlay, UI_PLAYBACK_OVERLAY_SIZE / 2, LV_PART_MAIN);
+    lv_obj_set_style_transform_pivot_y(ui_ctx.playback_overlay, UI_PLAYBACK_OVERLAY_SIZE / 2, LV_PART_MAIN);
+    lv_obj_set_style_transform_scale(ui_ctx.playback_overlay, UI_PLAYBACK_SCALE_SHOWN, LV_PART_MAIN);
+
+    lv_obj_remove_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    ui_ctx.playback_icon = lv_label_create(ui_ctx.playback_overlay);
+    lv_label_set_text(ui_ctx.playback_icon, LV_SYMBOL_PAUSE);
+    lv_obj_set_style_text_color(ui_ctx.playback_icon, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.playback_icon, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_center(ui_ctx.playback_icon);
+
     /* Track Label */
     ui_ctx.track_label = lv_label_create(ui_ctx.scr);
     lv_obj_set_width(ui_ctx.track_label, 200);
@@ -332,13 +472,6 @@ void ui_init(void)
     lv_obj_set_style_anim_duration(ui_ctx.track_label, 10000, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.track_label, "Waiting for track...");
     lv_obj_align(ui_ctx.track_label, LV_ALIGN_TOP_MID, 0, 175);
-
-    /* Play/Pause Indicator */
-    ui_ctx.play_pause_label = lv_label_create(ui_ctx.scr);
-    lv_obj_set_style_text_color(ui_ctx.play_pause_label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
-    lv_obj_set_style_text_font(ui_ctx.play_pause_label, &lv_font_montserrat_16, LV_PART_MAIN);
-    lv_label_set_text(ui_ctx.play_pause_label, LV_SYMBOL_PLAY);
-    lv_obj_align(ui_ctx.play_pause_label, LV_ALIGN_TOP_LEFT, 20, 175);
 
     /* Timers & Progress Bar */
     ui_ctx.elapsed_label = lv_label_create(ui_ctx.scr);
@@ -620,8 +753,32 @@ void ui_update_mute(bool mute)
 
 void ui_update_playback(bool playing)
 {
-    if (ui_ctx.play_pause_label)
+    if (!ui_ctx.playback_overlay)
     {
-        lv_label_set_text(ui_ctx.play_pause_label, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+        return;
+    }
+
+    if (playing)
+    {
+        hide_playback_overlay();
+
+        if (!ui_ctx.eq_anim_active)
+        {
+            start_eq_animations();
+        }
+    }
+    else
+    {
+        if (ui_ctx.playback_icon)
+        {
+            lv_label_set_text(ui_ctx.playback_icon, LV_SYMBOL_PAUSE);
+        }
+
+        if (!ui_ctx.playback_overlay_visible)
+        {
+            show_playback_overlay();
+        }
+
+        stop_eq_animations();
     }
 }

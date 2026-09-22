@@ -65,6 +65,7 @@ env/
 .clangd/
 .ccls-cache/
 compile_commands.json
+.cache/
 
 # Windows specific
 Thumbs.db
@@ -82,3 +83,4 @@ Desktop.ini
 audios/
 music/
 music_output/
+sim/ui_simulator
