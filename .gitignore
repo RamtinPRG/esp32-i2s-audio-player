@@ -81,6 +81,6 @@ Desktop.ini
 
 #######
 audios/
-music/
+music/*.mp3
 music_output/
 sim/ui_simulator
