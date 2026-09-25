@@ -67,7 +67,6 @@ typedef struct
     lv_obj_t *vol_icon;
 
     bool eq_anim_active;
-    lv_timer_t *progress_timer;
     uint32_t total_duration_sec;
     uint32_t elapsed_duration_sec;
 } ui_ctx_t;
@@ -188,33 +187,6 @@ static void stop_eq_animations(void)
         lv_anim_start(&a);
     }
     ui_ctx.eq_anim_active = false;
-}
-
-static void progress_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    if (ui_ctx.total_duration_sec == 0)
-        return;
-
-    if (ui_ctx.elapsed_duration_sec < ui_ctx.total_duration_sec)
-    {
-        ui_ctx.elapsed_duration_sec++;
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%02lu:%02lu",
-                 ui_ctx.elapsed_duration_sec / 60,
-                 ui_ctx.elapsed_duration_sec % 60);
-
-        if (ui_ctx.elapsed_label)
-        {
-            lv_label_set_text(ui_ctx.elapsed_label, buf);
-        }
-
-        uint32_t percent = (ui_ctx.elapsed_duration_sec * 100) / ui_ctx.total_duration_sec;
-        if (ui_ctx.progress_bar)
-        {
-            lv_bar_set_value(ui_ctx.progress_bar, percent, LV_ANIM_ON);
-        }
-    }
 }
 
 static void cover_translate_x_cb(void *var, int32_t v)
@@ -545,8 +517,6 @@ void ui_init(void)
     lv_obj_set_style_text_font(ui_ctx.vol_label, &lv_font_montserrat_16, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.vol_label, "80%");
     lv_obj_align(ui_ctx.vol_label, LV_ALIGN_LEFT_MID, 45, 10);
-
-    ui_ctx.progress_timer = lv_timer_create(progress_timer_cb, 1000, NULL);
 }
 
 void ui_set_status(const char *text)
@@ -667,11 +637,6 @@ void ui_notify_track_started(const char *path, const void *cover_src, int index,
     lv_label_set_text(ui_ctx.elapsed_label, "00:00");
     lv_bar_set_value(ui_ctx.progress_bar, 0, LV_ANIM_OFF);
 
-    if (ui_ctx.progress_timer)
-    {
-        lv_timer_reset(ui_ctx.progress_timer);
-    }
-
     if (!ui_ctx.eq_anim_active)
     {
         start_eq_animations();
@@ -780,5 +745,33 @@ void ui_update_playback(bool playing)
         }
 
         stop_eq_animations();
+    }
+}
+
+void ui_update_elapsed(uint32_t elapsed_sec)
+{
+    if (ui_ctx.total_duration_sec == 0)
+        return;
+
+    if (elapsed_sec > ui_ctx.total_duration_sec)
+    {
+        elapsed_sec = ui_ctx.total_duration_sec;
+    }
+
+    ui_ctx.elapsed_duration_sec = elapsed_sec;
+
+    if (ui_ctx.elapsed_label)
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%02lu:%02lu",
+                 ui_ctx.elapsed_duration_sec / 60,
+                 ui_ctx.elapsed_duration_sec % 60);
+        lv_label_set_text(ui_ctx.elapsed_label, buf);
+    }
+
+    if (ui_ctx.progress_bar)
+    {
+        uint32_t percent = (ui_ctx.elapsed_duration_sec * 100) / ui_ctx.total_duration_sec;
+        lv_bar_set_value(ui_ctx.progress_bar, percent, LV_ANIM_ON);
     }
 }

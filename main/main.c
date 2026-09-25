@@ -798,6 +798,9 @@ static void sd_read_task(void *arg)
     audio_buffer_t buf;
     FILE *f = NULL;
 
+    uint32_t track_bytes_read = 0;
+    uint32_t last_elapsed_sec = 0;
+
     while (1)
     {
         /* ------------------------------------------------------------
@@ -873,6 +876,9 @@ static void sd_read_task(void *arg)
             int mins = (int)duration_sec_f / 60;
             int secs = (int)duration_sec_f % 60;
             ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)", filepath, size / (1024.0f * 1024.0f), mins, secs);
+
+            track_bytes_read = 0;
+            last_elapsed_sec = 0;
 
             // --- Check for corresponding .bmp cover art ---
             const void *img_arg = NULL;
@@ -955,6 +961,20 @@ static void sd_read_task(void *arg)
         }
 
         buf.len = bytes_read;
+
+        track_bytes_read += bytes_read;
+        uint32_t current_elapsed_sec = track_bytes_read / 176400;
+
+        if (current_elapsed_sec != last_elapsed_sec)
+        {
+            /* Use a short timeout so UI locking doesn't stutter the audio DMA */
+            if (lvgl_port_lock(10))
+            {
+                ui_update_elapsed(current_elapsed_sec);
+                lvgl_port_unlock();
+                last_elapsed_sec = current_elapsed_sec;
+            }
+        }
 
         /* Send filled buffer to I2S writer */
         if (xQueueSend(audio_data_queue, &buf, portMAX_DELAY) != pdTRUE)
