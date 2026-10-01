@@ -24,7 +24,6 @@
 #include "driver/sdspi_host.h"
 
 #include "sdmmc_cmd.h"
-#include "esp_check.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "esp_heap_caps.h"
@@ -46,10 +45,9 @@
 static const char *TAG = "I2S_SD";
 
 /* I2S pins */
-#define EXAMPLE_STD_BCLK_IO1 38
-#define EXAMPLE_STD_WS_IO1 40
-#define EXAMPLE_STD_DOUT_IO1 39
-#define EXAMPLE_STD_DIN_IO1 I2S_GPIO_UNUSED
+#define I2S_PIN_BCLK 38
+#define I2S_PIN_WS 40
+#define I2S_PIN_DOUT 39
 
 /* SD card SPI pins */
 #define SD_PIN_MOSI 5
@@ -685,7 +683,7 @@ static esp_err_t mount_sdcard(void)
 /*
  * Initialize I2S standard mode: 44100 Hz, 16-bit, stereo.
  */
-static void i2s_example_init_std(void)
+static void i2s_init_std(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 6;
@@ -698,9 +696,9 @@ static void i2s_example_init_std(void)
         .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
-            .bclk = EXAMPLE_STD_BCLK_IO1,
-            .ws = EXAMPLE_STD_WS_IO1,
-            .dout = EXAMPLE_STD_DOUT_IO1,
+            .bclk = I2S_PIN_BCLK,
+            .ws = I2S_PIN_WS,
+            .dout = I2S_PIN_DOUT,
             .din = I2S_GPIO_UNUSED,
             .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
         },
@@ -1084,7 +1082,7 @@ void app_main(void)
     }
 
     /* Initialize I2S */
-    i2s_example_init_std();
+    i2s_init_std();
 
     /* Create buffer queues */
     free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
