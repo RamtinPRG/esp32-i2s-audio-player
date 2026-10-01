@@ -365,6 +365,20 @@ static void hide_playback_overlay(void)
     ui_ctx.playback_overlay_visible = false;
 }
 
+static void vol_overlay_translate_y_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_translate_y((lv_obj_t *)var, v, LV_PART_MAIN);
+}
+
+static void vol_overlay_hide_ready_cb(lv_anim_t *a)
+{
+    (void)a;
+    if (ui_ctx.vol_overlay)
+    {
+        lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void ui_init(void)
 {
     ui_ctx.scr = lv_screen_active();
@@ -655,16 +669,38 @@ void ui_notify_track_finished(const char *path)
 
 void ui_show_volume_mode(bool show)
 {
-    if (ui_ctx.vol_overlay)
+    if (!ui_ctx.vol_overlay)
     {
-        if (show)
-        {
-            lv_obj_clear_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
-        }
-        else
-        {
-            lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
-        }
+        return;
+    }
+
+    /* Prevent conflicting animations if toggled rapidly */
+    lv_anim_delete(ui_ctx.vol_overlay, vol_overlay_translate_y_cb);
+
+    if (show)
+    {
+        lv_obj_clear_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, ui_ctx.vol_overlay);
+        lv_anim_set_values(&a, 100, 0); /* Slide up from +100px (off-screen) to 0px */
+        lv_anim_set_duration(&a, 250);
+        lv_anim_set_exec_cb(&a, vol_overlay_translate_y_cb);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_start(&a);
+    }
+    else
+    {
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, ui_ctx.vol_overlay);
+        lv_anim_set_values(&a, lv_obj_get_style_translate_y(ui_ctx.vol_overlay, LV_PART_MAIN), 100);
+        lv_anim_set_duration(&a, 200);
+        lv_anim_set_exec_cb(&a, vol_overlay_translate_y_cb);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+        lv_anim_set_ready_cb(&a, vol_overlay_hide_ready_cb); /* Hide the object when finished */
+        lv_anim_start(&a);
     }
 }
 
