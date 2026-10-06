@@ -42,6 +42,12 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lvgl_port.h"
 
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "lwip/ip4_addr.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+
 static const char *TAG = "I2S_SD";
 
 /* I2S pins */
@@ -55,6 +61,12 @@ static const char *TAG = "I2S_SD";
 #define SD_PIN_CLK 6
 #define SD_PIN_CS 7
 #define SD_MOUNT_POINT "/sdcard"
+
+/* Wi-Fi Transfer Mode settings */
+#define WIFI_AP_SSID "ESP-AudioPlayer"
+#define WIFI_AP_PASSWORD "audio1234"
+#define WIFI_AP_CHANNEL 6
+#define WIFI_TRANSFER_URL "http://192.168.4.1"
 
 /* Rotary encoder pins */
 #define ENCODER_PIN_A 16
@@ -168,6 +180,241 @@ static volatile bool app_mute = false;
 static volatile bool app_playing = true;
 
 static int64_t last_volume_activity_us = 0;
+
+/* --------------------------------------------------------------------------
+ * Wi-Fi transfer mode state
+ * -------------------------------------------------------------------------- */
+static bool wifi_tcpip_initialized = false;
+static bool wifi_driver_initialized = false;
+static bool wifi_ap_running = false;
+static esp_netif_t *wifi_ap_netif = NULL;
+static esp_event_handler_instance_t wifi_event_instance = NULL;
+
+/* --------------------------------------------------------------------------
+ * Wi-Fi event handler
+ * -------------------------------------------------------------------------- */
+static void wifi_event_handler(void *arg,
+                               esp_event_base_t event_base,
+                               int32_t event_id,
+                               void *event_data)
+{
+    (void)arg;
+    (void)event_data;
+
+    if (event_base != WIFI_EVENT)
+    {
+        return;
+    }
+
+    switch (event_id)
+    {
+    case WIFI_EVENT_AP_START:
+        ESP_LOGI(TAG, "Wi-Fi AP started");
+        break;
+
+    case WIFI_EVENT_AP_STOP:
+        ESP_LOGI(TAG, "Wi-Fi AP stopped");
+        break;
+
+    case WIFI_EVENT_AP_STACONNECTED:
+        ESP_LOGI(TAG, "Wi-Fi station connected");
+        break;
+
+    case WIFI_EVENT_AP_STADISCONNECTED:
+        ESP_LOGI(TAG, "Wi-Fi station disconnected");
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Start Wi-Fi Access Point for transfer mode.
+ *
+ * This function is re-entrant:
+ * - first call initializes Wi-Fi
+ * - later calls only start Wi-Fi again
+ * -------------------------------------------------------------------------- */
+static void wifi_transfer_start(void)
+{
+    esp_err_t ret;
+
+    if (!wifi_tcpip_initialized)
+    {
+        ESP_LOGI(TAG, "Initializing NVS / netif / event loop for Wi-Fi");
+
+        /* Initialize NVS */
+        ret = nvs_flash_init();
+
+        if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+        {
+            ESP_ERROR_CHECK(nvs_flash_erase());
+            ret = nvs_flash_init();
+        }
+
+        ESP_ERROR_CHECK(ret);
+
+        /* Initialize TCP/IP and event loop */
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+        wifi_tcpip_initialized = true;
+    }
+
+    if (!wifi_driver_initialized)
+    {
+        ESP_LOGI(TAG, "Creating Wi-Fi AP interface");
+
+        /* Create default Wi-Fi AP network interface */
+        wifi_ap_netif = esp_netif_create_default_wifi_ap();
+        assert(wifi_ap_netif != NULL);
+
+        /* Configure static IP: 192.168.4.1 */
+        esp_netif_ip_info_t ip_info;
+
+        IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
+        IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
+        IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+
+        /* Ignore result here: DHCP server may already be stopped */
+        esp_netif_dhcps_stop(wifi_ap_netif);
+
+        ESP_ERROR_CHECK(esp_netif_set_ip_info(wifi_ap_netif, &ip_info));
+        ESP_ERROR_CHECK(esp_netif_dhcps_start(wifi_ap_netif));
+
+        /* Initialize Wi-Fi */
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+        /* Register Wi-Fi event handler */
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            WIFI_EVENT,
+            ESP_EVENT_ANY_ID,
+            &wifi_event_handler,
+            NULL,
+            &wifi_event_instance));
+
+        /* AP configuration */
+        wifi_config_t wifi_config = {0};
+
+        snprintf((char *)wifi_config.ap.ssid,
+                 sizeof(wifi_config.ap.ssid),
+                 "%s",
+                 WIFI_AP_SSID);
+
+        snprintf((char *)wifi_config.ap.password,
+                 sizeof(wifi_config.ap.password),
+                 "%s",
+                 WIFI_AP_PASSWORD);
+
+        wifi_config.ap.ssid_len = strlen(WIFI_AP_SSID);
+        wifi_config.ap.channel = WIFI_AP_CHANNEL;
+
+        /*
+         * Use only one station.
+         * This reduces Wi-Fi memory usage and is enough for file upload.
+         */
+        wifi_config.ap.max_connection = 1;
+        wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+
+        ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+
+        wifi_driver_initialized = true;
+    }
+    else
+    {
+        /*
+         * If the driver already exists but was only stopped, make sure the
+         * DHCP server is running again.
+         */
+        if (wifi_ap_netif != NULL)
+        {
+            esp_netif_dhcps_start(wifi_ap_netif);
+        }
+    }
+
+    if (!wifi_ap_running)
+    {
+        ESP_ERROR_CHECK(esp_wifi_start());
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        wifi_ap_running = true;
+
+        ESP_LOGI(TAG, "Wi-Fi transfer AP active: SSID=%s, URL=%s",
+                 WIFI_AP_SSID, WIFI_TRANSFER_URL);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Stop and fully deinitialize Wi-Fi before entering Player mode.
+ *
+ * This frees Wi-Fi resources so playback, LVGL, and cover loading have more
+ * memory available.
+ * -------------------------------------------------------------------------- */
+static void wifi_transfer_stop(void)
+{
+    if (!wifi_driver_initialized)
+    {
+        return;
+    }
+
+    if (wifi_ap_running)
+    {
+        ESP_LOGI(TAG, "Stopping Wi-Fi transfer AP");
+
+        if (wifi_ap_netif != NULL)
+        {
+            esp_netif_dhcps_stop(wifi_ap_netif);
+        }
+
+        esp_err_t ret = esp_wifi_stop();
+
+        if (ret == ESP_OK)
+        {
+            wifi_ap_running = false;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(ret));
+        }
+
+        /* Give Wi-Fi a little time to finish disconnect/cleanup */
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+
+    /* Unregister event handler */
+    if (wifi_event_instance != NULL)
+    {
+        esp_event_handler_instance_unregister(
+            WIFI_EVENT,
+            ESP_EVENT_ANY_ID,
+            wifi_event_instance);
+
+        wifi_event_instance = NULL;
+    }
+
+    /* Fully deinitialize Wi-Fi driver */
+    esp_err_t ret = esp_wifi_deinit();
+
+    if (ret == ESP_OK)
+    {
+        wifi_driver_initialized = false;
+
+        if (wifi_ap_netif != NULL)
+        {
+            esp_netif_destroy_default_wifi(wifi_ap_netif);
+            wifi_ap_netif = NULL;
+        }
+
+        ESP_LOGI(TAG, "Wi-Fi fully deinitialized");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "esp_wifi_deinit failed: %s", esp_err_to_name(ret));
+    }
+}
 
 /* --------------------------------------------------------------------------
  * Encoder input helpers
@@ -1270,16 +1517,20 @@ static void enter_transfer_from_boot_menu(void)
     {
         ui_show_boot_menu(false);
 
-        /*
-         * Wi-Fi is not started yet.
-         * This screen will become active in the next steps.
-         */
         ui_show_transfer_screen(true,
-                                "ESP-AudioPlayer",
-                                "audio1234",
-                                "http://192.168.4.1");
+                                WIFI_AP_SSID,
+                                WIFI_AP_PASSWORD,
+                                WIFI_TRANSFER_URL);
 
-        ui_set_transfer_status("Transfer mode ready");
+        ui_set_transfer_status("Starting Wi-Fi...");
+        lvgl_port_unlock();
+    }
+
+    wifi_transfer_start();
+
+    if (lvgl_port_lock(500))
+    {
+        ui_set_transfer_status("Wi-Fi ready. HTTP not added yet.");
         lvgl_port_unlock();
     }
 
@@ -1295,7 +1546,22 @@ static void finish_transfer_and_enter_player(void)
 
     if (lvgl_port_lock(500))
     {
-        ui_set_status("Exiting transfer mode...");
+        ui_set_transfer_status("Stopping Wi-Fi...");
+        lvgl_port_unlock();
+    }
+
+    wifi_transfer_stop();
+
+    /*
+     * Important:
+     * Give the system time to finish Wi-Fi cleanup before scanning SD,
+     * loading covers, and starting audio.
+     */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (lvgl_port_lock(500))
+    {
+        ui_set_transfer_status("Exiting transfer mode...");
         lvgl_port_unlock();
     }
 
