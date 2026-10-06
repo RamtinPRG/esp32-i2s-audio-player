@@ -57,14 +57,34 @@ typedef struct
     lv_obj_t *total_label;
     lv_obj_t *eq_bars[UI_EQ_BAR_COUNT];
 
-    /* New UX Elements */
     lv_obj_t *playback_overlay;
     lv_obj_t *playback_icon;
     bool playback_overlay_visible;
+
     lv_obj_t *vol_overlay;
     lv_obj_t *vol_bar;
     lv_obj_t *vol_label;
     lv_obj_t *vol_icon;
+
+    /* Boot menu */
+    lv_obj_t *boot_menu;
+    lv_obj_t *boot_title;
+    lv_obj_t *boot_player_btn;
+    lv_obj_t *boot_player_label;
+    lv_obj_t *boot_upload_btn;
+    lv_obj_t *boot_upload_label;
+    lv_obj_t *boot_hint;
+
+    /* Transfer screen */
+    lv_obj_t *transfer_menu;
+    lv_obj_t *transfer_title;
+    lv_obj_t *transfer_ssid;
+    lv_obj_t *transfer_pass;
+    lv_obj_t *transfer_url;
+    lv_obj_t *transfer_status;
+    lv_obj_t *transfer_progress;
+    lv_obj_t *transfer_percent;
+    lv_obj_t *transfer_hint;
 
     bool eq_anim_active;
     uint32_t total_duration_sec;
@@ -379,6 +399,34 @@ static void vol_overlay_hide_ready_cb(lv_anim_t *a)
     }
 }
 
+/* --------------------------------------------------------------------------
+ * Boot menu styling helper
+ * -------------------------------------------------------------------------- */
+static void boot_menu_style_button(lv_obj_t *btn, lv_obj_t *label, bool selected)
+{
+    if (btn == NULL || label == NULL)
+    {
+        return;
+    }
+
+    if (selected)
+    {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 2, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x000000), LV_PART_MAIN);
+    }
+    else
+    {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(COLOR_BORDER), LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    }
+}
+
 void ui_init(void)
 {
     ui_ctx.scr = lv_screen_active();
@@ -531,6 +579,151 @@ void ui_init(void)
     lv_obj_set_style_text_font(ui_ctx.vol_label, &lv_font_montserrat_16, LV_PART_MAIN);
     lv_label_set_text(ui_ctx.vol_label, "80%");
     lv_obj_align(ui_ctx.vol_label, LV_ALIGN_LEFT_MID, 45, 10);
+
+    /* ------------------------------------------------------------------ */
+    /* Boot menu overlay                                                  */
+    /*                                                                    */
+    /* Created hidden. It will be shown later during boot.                */
+    /* ------------------------------------------------------------------ */
+    ui_ctx.boot_menu = lv_obj_create(ui_ctx.scr);
+    no_scroll(ui_ctx.boot_menu);
+    lv_obj_set_size(ui_ctx.boot_menu, LCD_H_RES, LCD_V_RES);
+    lv_obj_align(ui_ctx.boot_menu, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(ui_ctx.boot_menu, lv_color_hex(COLOR_BG), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_ctx.boot_menu, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui_ctx.boot_menu, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.boot_menu, 0, LV_PART_MAIN);
+    lv_obj_add_flag(ui_ctx.boot_menu, LV_OBJ_FLAG_HIDDEN);
+
+    /* Title */
+    ui_ctx.boot_title = lv_label_create(ui_ctx.boot_menu);
+    lv_label_set_text(ui_ctx.boot_title, "Audio Player");
+    lv_obj_set_style_text_color(ui_ctx.boot_title, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.boot_title, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_align(ui_ctx.boot_title, LV_ALIGN_TOP_MID, 0, 35);
+
+    /* Player option */
+    ui_ctx.boot_player_btn = lv_obj_create(ui_ctx.boot_menu);
+    no_scroll(ui_ctx.boot_player_btn);
+    lv_obj_set_size(ui_ctx.boot_player_btn, 180, 56);
+    lv_obj_align(ui_ctx.boot_player_btn, LV_ALIGN_TOP_MID, 0, 90);
+    lv_obj_set_style_radius(ui_ctx.boot_player_btn, 12, LV_PART_MAIN);
+    lv_obj_remove_flag(ui_ctx.boot_player_btn, LV_OBJ_FLAG_CLICKABLE);
+
+    ui_ctx.boot_player_label = lv_label_create(ui_ctx.boot_player_btn);
+    lv_label_set_text(ui_ctx.boot_player_label, "Player");
+    lv_obj_set_style_text_font(ui_ctx.boot_player_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_center(ui_ctx.boot_player_label);
+
+    /* Upload option */
+    ui_ctx.boot_upload_btn = lv_obj_create(ui_ctx.boot_menu);
+    no_scroll(ui_ctx.boot_upload_btn);
+    lv_obj_set_size(ui_ctx.boot_upload_btn, 180, 56);
+    lv_obj_align(ui_ctx.boot_upload_btn, LV_ALIGN_TOP_MID, 0, 160);
+    lv_obj_set_style_radius(ui_ctx.boot_upload_btn, 12, LV_PART_MAIN);
+    lv_obj_remove_flag(ui_ctx.boot_upload_btn, LV_OBJ_FLAG_CLICKABLE);
+
+    ui_ctx.boot_upload_label = lv_label_create(ui_ctx.boot_upload_btn);
+    lv_label_set_text(ui_ctx.boot_upload_label, "Upload");
+    lv_obj_set_style_text_font(ui_ctx.boot_upload_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_center(ui_ctx.boot_upload_label);
+
+    /* Hint text */
+    ui_ctx.boot_hint = lv_label_create(ui_ctx.boot_menu);
+    lv_label_set_text(ui_ctx.boot_hint, "Rotate: select\nPress: OK");
+    lv_obj_set_width(ui_ctx.boot_hint, 200);
+    lv_label_set_long_mode(ui_ctx.boot_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ui_ctx.boot_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui_ctx.boot_hint, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
+    lv_obj_align(ui_ctx.boot_hint, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    /* ------------------------------------------------------------------ */
+    /* Transfer screen overlay                                            */
+    /*                                                                    */
+    /* Created hidden. It will be shown when Upload mode is selected.     */
+    /* ------------------------------------------------------------------ */
+    ui_ctx.transfer_menu = lv_obj_create(ui_ctx.scr);
+    no_scroll(ui_ctx.transfer_menu);
+    lv_obj_set_size(ui_ctx.transfer_menu, LCD_H_RES, LCD_V_RES);
+    lv_obj_align(ui_ctx.transfer_menu, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(ui_ctx.transfer_menu, lv_color_hex(COLOR_BG), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_ctx.transfer_menu, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui_ctx.transfer_menu, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.transfer_menu, 0, LV_PART_MAIN);
+    lv_obj_add_flag(ui_ctx.transfer_menu, LV_OBJ_FLAG_HIDDEN);
+
+    /* Title */
+    ui_ctx.transfer_title = lv_label_create(ui_ctx.transfer_menu);
+    lv_label_set_text(ui_ctx.transfer_title, "Wi-Fi Upload");
+    lv_obj_set_style_text_color(ui_ctx.transfer_title, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_title, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_align(ui_ctx.transfer_title, LV_ALIGN_TOP_MID, 0, 25);
+
+    /* SSID */
+    ui_ctx.transfer_ssid = lv_label_create(ui_ctx.transfer_menu);
+    lv_obj_set_width(ui_ctx.transfer_ssid, 200);
+    lv_label_set_long_mode(ui_ctx.transfer_ssid, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(ui_ctx.transfer_ssid, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_ssid, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.transfer_ssid, "SSID: -");
+    lv_obj_align(ui_ctx.transfer_ssid, LV_ALIGN_TOP_LEFT, 20, 70);
+
+    /* Password */
+    ui_ctx.transfer_pass = lv_label_create(ui_ctx.transfer_menu);
+    lv_obj_set_width(ui_ctx.transfer_pass, 200);
+    lv_label_set_long_mode(ui_ctx.transfer_pass, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(ui_ctx.transfer_pass, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_pass, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.transfer_pass, "PASS: -");
+    lv_obj_align(ui_ctx.transfer_pass, LV_ALIGN_TOP_LEFT, 20, 100);
+
+    /* URL */
+    ui_ctx.transfer_url = lv_label_create(ui_ctx.transfer_menu);
+    lv_obj_set_width(ui_ctx.transfer_url, 200);
+    lv_label_set_long_mode(ui_ctx.transfer_url, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(ui_ctx.transfer_url, lv_color_hex(COLOR_PRIMARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_url, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.transfer_url, "URL: -");
+    lv_obj_align(ui_ctx.transfer_url, LV_ALIGN_TOP_LEFT, 20, 130);
+
+    /* Status */
+    ui_ctx.transfer_status = lv_label_create(ui_ctx.transfer_menu);
+    lv_obj_set_width(ui_ctx.transfer_status, 200);
+    lv_label_set_long_mode(ui_ctx.transfer_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ui_ctx.transfer_status, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui_ctx.transfer_status, lv_color_hex(COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_status, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_label_set_text(ui_ctx.transfer_status, "Waiting...");
+    lv_obj_align(ui_ctx.transfer_status, LV_ALIGN_TOP_MID, 0, 170);
+
+    /* Progress bar */
+    ui_ctx.transfer_progress = lv_bar_create(ui_ctx.transfer_menu);
+    lv_obj_set_size(ui_ctx.transfer_progress, 180, 8);
+    lv_obj_align(ui_ctx.transfer_progress, LV_ALIGN_TOP_MID, 0, 215);
+    lv_obj_set_style_bg_color(ui_ctx.transfer_progress, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui_ctx.transfer_progress, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(ui_ctx.transfer_progress, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_ctx.transfer_progress, 4, LV_PART_INDICATOR);
+    lv_bar_set_value(ui_ctx.transfer_progress, 0, LV_ANIM_OFF);
+
+    /* Progress percent */
+    ui_ctx.transfer_percent = lv_label_create(ui_ctx.transfer_menu);
+    lv_label_set_text(ui_ctx.transfer_percent, "0%");
+    lv_obj_set_style_text_color(ui_ctx.transfer_percent, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_ctx.transfer_percent, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_align(ui_ctx.transfer_percent, LV_ALIGN_TOP_MID, 0, 232);
+
+    /* Hint */
+    ui_ctx.transfer_hint = lv_label_create(ui_ctx.transfer_menu);
+    lv_label_set_text(ui_ctx.transfer_hint, "Long press encoder to finish");
+    lv_obj_set_width(ui_ctx.transfer_hint, 200);
+    lv_label_set_long_mode(ui_ctx.transfer_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ui_ctx.transfer_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui_ctx.transfer_hint, lv_color_hex(COLOR_SECONDARY), LV_PART_MAIN);
+    lv_obj_align(ui_ctx.transfer_hint, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    /* Default visual selection */
+    ui_set_boot_selection(BOOT_OPT_PLAYER);
 }
 
 void ui_set_status(const char *text)
@@ -809,5 +1002,161 @@ void ui_update_elapsed(uint32_t elapsed_sec)
     {
         uint32_t percent = (ui_ctx.elapsed_duration_sec * 100) / ui_ctx.total_duration_sec;
         lv_bar_set_value(ui_ctx.progress_bar, percent, LV_ANIM_ON);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Boot menu functions
+ * -------------------------------------------------------------------------- */
+
+void ui_show_boot_menu(bool show)
+{
+    if (ui_ctx.boot_menu == NULL)
+    {
+        return;
+    }
+
+    if (show)
+    {
+        /*
+         * The boot menu is a full-screen overlay.
+         * Hide small player overlays so they do not appear above it.
+         */
+        stop_eq_animations();
+
+        if (ui_ctx.playback_overlay != NULL)
+        {
+            lv_obj_add_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_HIDDEN);
+            ui_ctx.playback_overlay_visible = false;
+        }
+
+        if (ui_ctx.vol_overlay != NULL)
+        {
+            lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        lv_obj_clear_flag(ui_ctx.boot_menu, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        lv_obj_add_flag(ui_ctx.boot_menu, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void ui_set_boot_selection(boot_option_t selection)
+{
+    bool player_selected = (selection == BOOT_OPT_PLAYER);
+
+    boot_menu_style_button(
+        ui_ctx.boot_player_btn,
+        ui_ctx.boot_player_label,
+        player_selected);
+
+    boot_menu_style_button(
+        ui_ctx.boot_upload_btn,
+        ui_ctx.boot_upload_label,
+        !player_selected);
+}
+
+/* --------------------------------------------------------------------------
+ * Transfer screen functions
+ * -------------------------------------------------------------------------- */
+
+void ui_update_transfer_progress(uint32_t done_bytes, uint32_t total_bytes)
+{
+    uint32_t percent = 0;
+
+    if (total_bytes > 0)
+    {
+        percent = (uint32_t)(((uint64_t)done_bytes * 100) / total_bytes);
+
+        if (percent > 100)
+        {
+            percent = 100;
+        }
+    }
+
+    if (ui_ctx.transfer_progress != NULL)
+    {
+        lv_bar_set_value(ui_ctx.transfer_progress, percent, LV_ANIM_OFF);
+    }
+
+    if (ui_ctx.transfer_percent != NULL)
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%lu%%", (unsigned long)percent);
+        lv_label_set_text(ui_ctx.transfer_percent, buf);
+    }
+}
+
+void ui_set_transfer_status(const char *text)
+{
+    if (ui_ctx.transfer_status != NULL && text != NULL)
+    {
+        lv_label_set_text(ui_ctx.transfer_status, text);
+    }
+}
+
+void ui_show_transfer_screen(bool show,
+                             const char *ssid,
+                             const char *password,
+                             const char *url)
+{
+    if (ui_ctx.transfer_menu == NULL)
+    {
+        return;
+    }
+
+    if (show)
+    {
+        /*
+         * Transfer screen is a full-screen overlay.
+         * Stop player animations and hide small overlays.
+         */
+        stop_eq_animations();
+
+        if (ui_ctx.playback_overlay != NULL)
+        {
+            lv_obj_add_flag(ui_ctx.playback_overlay, LV_OBJ_FLAG_HIDDEN);
+            ui_ctx.playback_overlay_visible = false;
+        }
+
+        if (ui_ctx.vol_overlay != NULL)
+        {
+            lv_obj_add_flag(ui_ctx.vol_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if (ui_ctx.boot_menu != NULL)
+        {
+            lv_obj_add_flag(ui_ctx.boot_menu, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        char buf[96];
+
+        if (ui_ctx.transfer_ssid != NULL)
+        {
+            snprintf(buf, sizeof(buf), "SSID: %s", ssid ? ssid : "-");
+            lv_label_set_text(ui_ctx.transfer_ssid, buf);
+        }
+
+        if (ui_ctx.transfer_pass != NULL)
+        {
+            snprintf(buf, sizeof(buf), "PASS: %s", password ? password : "-");
+            lv_label_set_text(ui_ctx.transfer_pass, buf);
+        }
+
+        if (ui_ctx.transfer_url != NULL)
+        {
+            snprintf(buf, sizeof(buf), "URL: %s", url ? url : "-");
+            lv_label_set_text(ui_ctx.transfer_url, buf);
+        }
+
+        ui_update_transfer_progress(0, 0);
+
+        lv_obj_clear_flag(ui_ctx.transfer_menu, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+        lv_obj_add_flag(ui_ctx.transfer_menu, LV_OBJ_FLAG_HIDDEN);
     }
 }

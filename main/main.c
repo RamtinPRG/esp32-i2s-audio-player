@@ -107,6 +107,12 @@ typedef struct
 } playlist_t;
 
 /* --------------------------------------------------------------------------
+ * Global playlist and audio system state
+ * -------------------------------------------------------------------------- */
+static playlist_t playlist;
+static bool audio_system_initialized = false;
+
+/* --------------------------------------------------------------------------
  * Encoder / UI mode state machine
  * -------------------------------------------------------------------------- */
 
@@ -132,11 +138,30 @@ typedef enum
     UI_MODE_VOLUME,
 } ui_mode_t;
 
+typedef enum
+{
+    APP_MODE_BOOT_MENU = 0,
+    APP_MODE_BUSY,
+    APP_MODE_PLAYER,
+    APP_MODE_TRANSFER,
+} app_mode_t;
+
+typedef enum
+{
+    APP_CMD_START_PLAYER = 0,
+    APP_CMD_START_TRANSFER,
+    APP_CMD_FINISH_TRANSFER,
+} app_cmd_t;
+
 static QueueHandle_t input_event_queue = NULL;
 static QueueHandle_t player_cmd_queue = NULL;
 static esp_timer_handle_t volume_autohide_timer = NULL;
 
 static ui_mode_t ui_mode = UI_MODE_TRACK;
+
+static QueueHandle_t app_cmd_queue = NULL;
+static volatile app_mode_t app_mode = APP_MODE_BOOT_MENU;
+static boot_option_t boot_option = BOOT_OPT_PLAYER;
 
 static volatile uint8_t app_volume = 100;
 static volatile bool app_mute = false;
@@ -183,6 +208,28 @@ static void send_player_cmd(player_cmd_t cmd)
      * to blocking the UI/input task.
      */
     xQueueSend(player_cmd_queue, &cmd, 0);
+}
+
+static void post_app_cmd(app_cmd_t cmd)
+{
+    if (app_cmd_queue == NULL)
+    {
+        return;
+    }
+
+    if (xPortInIsrContext() == pdTRUE)
+    {
+        BaseType_t higher_woken = pdFALSE;
+        xQueueSendFromISR(app_cmd_queue, &cmd, &higher_woken);
+        if (higher_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+    else
+    {
+        xQueueSend(app_cmd_queue, &cmd, 0);
+    }
 }
 
 static void ui_apply_volume_and_mute(void)
@@ -315,6 +362,65 @@ static void input_control_task(void *arg)
         if (evt == INPUT_EVT_SHORT_PRESS &&
             (now - last_long_press_us) < LONG_PRESS_GUARD_US)
         {
+            continue;
+        }
+
+        /* ------------------------------------------------------------ */
+        /* Top-level application mode handling                          */
+        /* ------------------------------------------------------------ */
+        if (app_mode != APP_MODE_PLAYER)
+        {
+            if (app_mode == APP_MODE_BOOT_MENU)
+            {
+                switch (evt)
+                {
+                case INPUT_EVT_ROTATE_CW:
+                case INPUT_EVT_ROTATE_CCW:
+                    boot_option = (boot_option == BOOT_OPT_PLAYER)
+                                      ? BOOT_OPT_UPLOAD
+                                      : BOOT_OPT_PLAYER;
+
+                    if (lvgl_port_lock(200))
+                    {
+                        ui_set_boot_selection(boot_option);
+                        lvgl_port_unlock();
+                    }
+                    break;
+
+                case INPUT_EVT_SHORT_PRESS:
+                    app_mode = APP_MODE_BUSY;
+
+                    if (boot_option == BOOT_OPT_PLAYER)
+                    {
+                        post_app_cmd(APP_CMD_START_PLAYER);
+                    }
+                    else
+                    {
+                        post_app_cmd(APP_CMD_START_TRANSFER);
+                    }
+                    break;
+
+                default:
+                    break;
+                }
+            }
+            else if (app_mode == APP_MODE_TRANSFER)
+            {
+                /*
+                 * In transfer mode:
+                 * long press means "done, go to player".
+                 */
+                if (evt == INPUT_EVT_LONG_PRESS)
+                {
+                    app_mode = APP_MODE_BUSY;
+                    post_app_cmd(APP_CMD_FINISH_TRANSFER);
+                }
+            }
+
+            /*
+             * APP_MODE_BUSY ignores all input.
+             * Also ignore rotation/short press in transfer mode.
+             */
             continue;
         }
 
@@ -1030,33 +1136,84 @@ static void i2s_write_task(void *arg)
     }
 }
 
-void app_main(void)
+/* --------------------------------------------------------------------------
+ * Start the audio system lazily.
+ *
+ * This is called only when we actually enter Player mode.
+ * -------------------------------------------------------------------------- */
+static void audio_system_start(void)
 {
-    /* Initialize Hardware and LVGL display */
-    display_hardware_init();
-
-    if (lvgl_port_lock(500))
+    if (!audio_system_initialized)
     {
-        ui_set_status("Mounting SD card...");
-        lvgl_port_unlock();
+        ESP_LOGI(TAG, "Initializing audio system");
+
+        /* Initialize I2S */
+        i2s_init_std();
+
+        /* Create buffer queues */
+        free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
+        audio_data_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
+
+        assert(free_buffer_queue != NULL);
+        assert(audio_data_queue != NULL);
+
+        /* Allocate DMA-capable audio buffers */
+        for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
+        {
+            uint8_t *mem = heap_caps_calloc(
+                AUDIO_BUFF_SIZE,
+                1,
+                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+            if (mem == NULL)
+            {
+                ESP_LOGE(TAG, "Failed to allocate DMA-capable audio buffer");
+                abort();
+            }
+
+            audio_buffer_t buf = {
+                .data = mem,
+                .len = 0,
+            };
+
+            xQueueSend(free_buffer_queue, &buf, 0);
+        }
+
+        /* Create audio tasks */
+        xTaskCreate(sd_read_task, "sd_read_task", 8192, &playlist, 6, NULL);
+        xTaskCreate(i2s_write_task, "i2s_write_task", 4096, NULL, 5, NULL);
+
+        audio_system_initialized = true;
     }
 
-    /* Mount SD card */
-    ESP_ERROR_CHECK(mount_sdcard());
+    app_playing = true;
+}
+
+/* --------------------------------------------------------------------------
+ * Enter normal Player mode.
+ *
+ * This scans the SD card, loads cover art, and starts audio playback.
+ * If no PCM files are found, it returns to the boot menu.
+ * -------------------------------------------------------------------------- */
+static void start_player_mode(bool from_transfer)
+{
+    (void)from_transfer;
+
+    app_mode = APP_MODE_BUSY;
 
     if (lvgl_port_lock(500))
     {
+        ui_show_boot_menu(false);
+        ui_show_transfer_screen(false, NULL, NULL, NULL);
         ui_set_status("Scanning PCM files...");
         lvgl_port_unlock();
     }
 
-    /* Build playlist */
-    static playlist_t playlist;
     esp_err_t ret = build_playlist(&playlist);
 
     if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to build playlist. Halting.");
+        ESP_LOGW(TAG, "No playable PCM files found");
 
         if (lvgl_port_lock(500))
         {
@@ -1064,6 +1221,16 @@ void app_main(void)
             lvgl_port_unlock();
         }
 
+        vTaskDelay(pdMS_TO_TICKS(1500));
+
+        if (lvgl_port_lock(500))
+        {
+            ui_show_boot_menu(true);
+            ui_set_boot_selection(boot_option);
+            lvgl_port_unlock();
+        }
+
+        app_mode = APP_MODE_BOOT_MENU;
         return;
     }
 
@@ -1081,47 +1248,146 @@ void app_main(void)
         lvgl_port_unlock();
     }
 
-    /* Initialize I2S */
-    i2s_init_std();
+    audio_system_start();
 
-    /* Create buffer queues */
-    free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
-    audio_data_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
+    app_mode = APP_MODE_PLAYER;
+}
 
-    assert(free_buffer_queue != NULL);
-    assert(audio_data_queue != NULL);
+/* --------------------------------------------------------------------------
+ * Enter Transfer mode placeholder.
+ *
+ * Later this will start:
+ * - Wi-Fi AP
+ * - HTTP upload server
+ * - transfer screen UI
+ * -------------------------------------------------------------------------- */
+static void enter_transfer_from_boot_menu(void)
+{
+    app_mode = APP_MODE_BUSY;
+    app_playing = false;
 
-    /* Create encoder/input queues */
+    if (lvgl_port_lock(500))
+    {
+        ui_show_boot_menu(false);
+
+        /*
+         * Wi-Fi is not started yet.
+         * This screen will become active in the next steps.
+         */
+        ui_show_transfer_screen(true,
+                                "ESP-AudioPlayer",
+                                "audio1234",
+                                "http://192.168.4.1");
+
+        ui_set_transfer_status("Transfer mode ready");
+        lvgl_port_unlock();
+    }
+
+    app_mode = APP_MODE_TRANSFER;
+}
+
+/* --------------------------------------------------------------------------
+ * Finish Transfer mode and enter Player mode.
+ * -------------------------------------------------------------------------- */
+static void finish_transfer_and_enter_player(void)
+{
+    app_mode = APP_MODE_BUSY;
+
+    if (lvgl_port_lock(500))
+    {
+        ui_set_status("Exiting transfer mode...");
+        lvgl_port_unlock();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(250));
+
+    start_player_mode(true);
+}
+
+/* --------------------------------------------------------------------------
+ * Application control task
+ *
+ * This task performs heavy mode transitions:
+ * - starting Player mode
+ * - starting Transfer mode
+ * - finishing Transfer mode
+ * -------------------------------------------------------------------------- */
+static void app_control_task(void *arg)
+{
+    (void)arg;
+
+    app_cmd_t cmd;
+
+    while (1)
+    {
+        if (xQueueReceive(app_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        switch (cmd)
+        {
+        case APP_CMD_START_PLAYER:
+            ESP_LOGI(TAG, "App command: START_PLAYER");
+            start_player_mode(false);
+            break;
+
+        case APP_CMD_START_TRANSFER:
+            ESP_LOGI(TAG, "App command: START_TRANSFER");
+            enter_transfer_from_boot_menu();
+            break;
+
+        case APP_CMD_FINISH_TRANSFER:
+            ESP_LOGI(TAG, "App command: FINISH_TRANSFER");
+            finish_transfer_and_enter_player();
+            break;
+
+        default:
+            ESP_LOGW(TAG, "App command: unknown %d", (int)cmd);
+            break;
+        }
+    }
+}
+
+void app_main(void)
+{
+    /* Initialize display and LVGL UI */
+    display_hardware_init();
+
+    /* Create input/application queues */
     input_event_queue = xQueueCreate(32, sizeof(input_event_t));
     player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
+    app_cmd_queue = xQueueCreate(8, sizeof(app_cmd_t));
 
     assert(input_event_queue != NULL);
     assert(player_cmd_queue != NULL);
+    assert(app_cmd_queue != NULL);
 
-    /* Allocate DMA-capable audio buffers */
-    for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
+    /* Mount SD card */
+    if (lvgl_port_lock(500))
     {
-        uint8_t *mem = heap_caps_calloc(
-            AUDIO_BUFF_SIZE, 1, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-
-        if (mem == NULL)
-        {
-            ESP_LOGE(TAG, "Failed to allocate DMA-capable audio buffer");
-            abort();
-        }
-
-        audio_buffer_t buf = {
-            .data = mem,
-            .len = 0,
-        };
-
-        xQueueSend(free_buffer_queue, &buf, 0);
+        ui_set_status("Mounting SD card...");
+        lvgl_port_unlock();
     }
 
-    /* Create tasks */
-    xTaskCreate(sd_read_task, "sd_read_task", 8192, &playlist, 6, NULL);
-    xTaskCreate(i2s_write_task, "i2s_write_task", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(mount_sdcard());
+
+    /* Start in boot menu mode */
+    app_mode = APP_MODE_BOOT_MENU;
+
+    /* Create application control task */
+    xTaskCreate(app_control_task, "app_ctrl", 10240, NULL, 6, NULL);
 
     /* Initialize encoder/input state machine */
     encoder_input_init();
+
+    /* Show boot menu */
+    if (lvgl_port_lock(500))
+    {
+        ui_show_boot_menu(true);
+        ui_set_boot_selection(boot_option);
+        lvgl_port_unlock();
+    }
+
+    ESP_LOGI(TAG, "Boot menu active");
 }
