@@ -84,3 +84,6 @@ audios/
 music/*.mp3
 music_output/
 sim/ui_simulator
+
+schematics/
+datasheets/

@@ -13,6 +13,7 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <ctype.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,6 +48,7 @@
 #include "lwip/ip4_addr.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
+#include "esp_http_server.h"
 
 static const char *TAG = "I2S_SD";
 
@@ -189,6 +191,286 @@ static bool wifi_driver_initialized = false;
 static bool wifi_ap_running = false;
 static esp_netif_t *wifi_ap_netif = NULL;
 static esp_event_handler_instance_t wifi_event_instance = NULL;
+static httpd_handle_t upload_server = NULL;
+
+/* --------------------------------------------------------------------------
+ * Embedded HTML Web Page for File Upload
+ * -------------------------------------------------------------------------- */
+static const char UPLOAD_HTML[] =
+    "<!DOCTYPE html>\n"
+    "<html>\n"
+    "<head>\n"
+    "<meta charset='utf-8'>\n"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>\n"
+    "<title>ESP-AudioPlayer</title>\n"
+    "<style>\n"
+    "body{font-family:sans-serif;background:#08090C;color:#F2F6FF;text-align:center;padding:20px;}\n"
+    "h1{color:#00D5FF;}\n"
+    ".card{background:#121620;border:1px solid #263143;border-radius:12px;padding:20px;margin:20px auto;max-width:400px;}\n"
+    "input[type=file]{margin:10px 0;color:#F2F6FF;}\n"
+    "button{background:#00D5FF;color:#000;border:none;padding:10px 20px;border-radius:8px;font-size:16px;cursor:pointer;}\n"
+    "button:disabled{background:#8A93A6;cursor:not-allowed;}\n"
+    "#status{margin-top:15px;font-weight:bold;min-height:20px;}\n"
+    ".progress{width:100%;background:#263143;border-radius:4px;overflow:hidden;margin-top:10px;display:none;}\n"
+    ".progress-bar{height:8px;background:#00D5FF;width:0%;transition:width 0.2s;}\n"
+    "</style>\n"
+    "</head>\n"
+    "<body>\n"
+    "<h1>Wi-Fi Upload</h1>\n"
+    "<div class='card'>\n"
+    "<p>Select <b>.pcm</b> or <b>.bmp</b> files.</p>\n"
+    "<input type='file' id='fileInput' multiple accept='.pcm,.bmp'><br>\n"
+    "<button id='uploadBtn' onclick='uploadFiles()'>Upload</button>\n"
+    "<div class='progress' id='progressContainer'><div class='progress-bar' id='progressBar'></div></div>\n"
+    "<div id='status'></div>\n"
+    "</div>\n"
+    "<script>\n"
+    "async function uploadFiles(){\n"
+    "  const files=document.getElementById('fileInput').files;\n"
+    "  const status=document.getElementById('status');\n"
+    "  const btn=document.getElementById('uploadBtn');\n"
+    "  const progContainer=document.getElementById('progressContainer');\n"
+    "  const progBar=document.getElementById('progressBar');\n"
+    "  if(files.length===0){status.textContent='Please select files.';return;}\n"
+    "  btn.disabled=true;progContainer.style.display='block';\n"
+    "  for(let i=0;i<files.length;i++){\n"
+    "    const file=files[i];\n"
+    "    status.textContent='Uploading '+file.name+' ('+(i+1)+'/'+files.length+')...';\n"
+    "    progBar.style.width='0%';\n"
+    "    try{\n"
+    "      await uploadSingleFile(file,progBar);\n"
+    "      status.textContent=file.name+' OK!';\n"
+    "    }catch(e){\n"
+    "      status.textContent='Error: '+e.message;\n"
+    "      btn.disabled=false;\n"
+    "      return;\n"
+    "    }\n"
+    "  }\n"
+    "  status.textContent='All files uploaded!';\n"
+    "  btn.disabled=false;\n"
+    "  progBar.style.width='100%';\n"
+    "}\n"
+    "function uploadSingleFile(file,progBar){\n"
+    "  return new Promise((resolve,reject)=>{\n"
+    "    const xhr=new XMLHttpRequest();\n"
+    "    const url='/upload?filename='+encodeURIComponent(file.name);\n"
+    "    xhr.open('POST',url,true);\n"
+    "    xhr.setRequestHeader('Content-Type','application/octet-stream');\n"
+    "    xhr.upload.onprogress=(e)=>{\n"
+    "      if(e.lengthComputable){progBar.style.width=((e.loaded/e.total)*100)+'%';}\n"
+    "    };\n"
+    "    xhr.onload=()=>{\n"
+    "      if(xhr.status===200){resolve();}\n"
+    "      else{reject(new Error(xhr.responseText||'Server error'));}\n"
+    "    };\n"
+    "    xhr.onerror=()=>reject(new Error('Network error'));\n"
+    "    xhr.send(file);\n"
+    "  });\n"
+    "}\n"
+    "</script>\n"
+    "</body>\n"
+    "</html>\n";
+
+/* --------------------------------------------------------------------------
+ * HTTP Handlers
+ * -------------------------------------------------------------------------- */
+
+static bool is_valid_filename(const char *name)
+{
+    if (!name || name[0] == '\0')
+        return false;
+    size_t len = strlen(name);
+    if (len < 5 || len > 64)
+        return false;
+
+    /* Must end in .pcm or .bmp */
+    const char *ext = strrchr(name, '.');
+    if (!ext)
+        return false;
+    if (strcasecmp(ext, ".pcm") != 0 && strcasecmp(ext, ".bmp") != 0)
+        return false;
+
+    /* Only allow safe alphanumeric characters, dot, dash, underscore */
+    for (size_t i = 0; i < len; i++)
+    {
+        char c = name[i];
+        if (!(isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_'))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, UPLOAD_HTML, sizeof(UPLOAD_HTML) - 1);
+    return ESP_OK;
+}
+
+static esp_err_t upload_post_handler(httpd_req_t *req)
+{
+    char query[128] = {0};
+    char filename[65] = {0};
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing query string");
+        return ESP_FAIL;
+    }
+
+    if (httpd_query_key_value(query, "filename", filename, sizeof(filename)) != ESP_OK)
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing filename");
+        return ESP_FAIL;
+    }
+
+    if (!is_valid_filename(filename))
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid filename. Use alphanumeric, dot, dash, underscore. Max 64 chars. Must end in .pcm or .bmp");
+        return ESP_FAIL;
+    }
+
+    char tmp_path[140];
+    char final_path[140];
+    snprintf(tmp_path, sizeof(tmp_path), SD_MOUNT_POINT "/%s.tmp", filename);
+    snprintf(final_path, sizeof(final_path), SD_MOUNT_POINT "/%s", filename);
+
+    ESP_LOGI(TAG, "Upload start: %s", final_path);
+
+    if (lvgl_port_lock(100))
+    {
+        ui_set_transfer_status("Uploading...");
+        lvgl_port_unlock();
+    }
+
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot create file on SD");
+        return ESP_FAIL;
+    }
+
+    size_t remaining = req->content_len;
+    size_t total_written = 0;
+    static char rx_buffer[4096]; /* static to save stack */
+    bool failed = false;
+
+    while (remaining > 0)
+    {
+        size_t to_read = remaining < sizeof(rx_buffer) ? remaining : sizeof(rx_buffer);
+        int received = httpd_req_recv(req, rx_buffer, to_read);
+
+        if (received <= 0)
+        {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT)
+            {
+                continue; /* Retry on timeout */
+            }
+            ESP_LOGE(TAG, "Upload receive failed");
+            failed = true;
+            break;
+        }
+
+        size_t written = fwrite(rx_buffer, 1, received, f);
+        if (written != (size_t)received)
+        {
+            ESP_LOGE(TAG, "SD write failed");
+            failed = true;
+            break;
+        }
+
+        remaining -= received;
+        total_written += written;
+
+        /* Update UI progress occasionally */
+        if ((total_written % (64 * 1024)) < sizeof(rx_buffer))
+        {
+            if (lvgl_port_lock(10))
+            {
+                ui_update_transfer_progress(total_written, req->content_len);
+                lvgl_port_unlock();
+            }
+        }
+    }
+
+    fclose(f);
+
+    if (failed)
+    {
+        remove(tmp_path);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Upload failed");
+        return ESP_FAIL;
+    }
+
+    remove(final_path); /* Replace if exists */
+    if (rename(tmp_path, final_path) != 0)
+    {
+        remove(tmp_path);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Rename failed");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Upload complete: %s (%u bytes)", final_path, (unsigned)total_written);
+
+    if (lvgl_port_lock(100))
+    {
+        ui_set_transfer_status("Upload complete!");
+        ui_update_transfer_progress(100, 100);
+        lvgl_port_unlock();
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * HTTP Server Lifecycle
+ * -------------------------------------------------------------------------- */
+static void http_upload_server_start(void)
+{
+    if (upload_server != NULL)
+    {
+        return;
+    }
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.stack_size = 8192;
+    config.max_uri_handlers = 8;
+    config.recv_wait_timeout = 30; /* seconds */
+    config.send_wait_timeout = 30; /* seconds */
+
+    ESP_ERROR_CHECK(httpd_start(&upload_server, &config));
+
+    httpd_uri_t root_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = root_get_handler,
+    };
+    httpd_register_uri_handler(upload_server, &root_uri);
+
+    httpd_uri_t upload_uri = {
+        .uri = "/upload",
+        .method = HTTP_POST,
+        .handler = upload_post_handler,
+    };
+    httpd_register_uri_handler(upload_server, &upload_uri);
+
+    ESP_LOGI(TAG, "HTTP upload server started");
+}
+
+static void http_upload_server_stop(void)
+{
+    if (upload_server != NULL)
+    {
+        httpd_stop(upload_server);
+        upload_server = NULL;
+        ESP_LOGI(TAG, "HTTP upload server stopped");
+    }
+}
 
 /* --------------------------------------------------------------------------
  * Wi-Fi event handler
@@ -1527,10 +1809,11 @@ static void enter_transfer_from_boot_menu(void)
     }
 
     wifi_transfer_start();
+    http_upload_server_start(); /* <-- START HTTP HERE */
 
     if (lvgl_port_lock(500))
     {
-        ui_set_transfer_status("Wi-Fi ready. HTTP not added yet.");
+        ui_set_transfer_status("Wi-Fi & HTTP ready.");
         lvgl_port_unlock();
     }
 
@@ -1546,17 +1829,14 @@ static void finish_transfer_and_enter_player(void)
 
     if (lvgl_port_lock(500))
     {
-        ui_set_transfer_status("Stopping Wi-Fi...");
+        ui_set_transfer_status("Stopping services...");
         lvgl_port_unlock();
     }
 
+    http_upload_server_stop(); /* <-- STOP HTTP HERE */
     wifi_transfer_stop();
 
-    /*
-     * Important:
-     * Give the system time to finish Wi-Fi cleanup before scanning SD,
-     * loading covers, and starting audio.
-     */
+    /* Give the system time to finish cleanup */
     vTaskDelay(pdMS_TO_TICKS(500));
 
     if (lvgl_port_lock(500))
