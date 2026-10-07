@@ -50,6 +50,9 @@
 #include "nvs_flash.h"
 #include "esp_http_server.h"
 
+#include "mdns.h"
+#include "ff.h" /* For FATFS f_getfree */
+
 static const char *TAG = "I2S_SD";
 
 /* I2S pins */
@@ -211,6 +214,7 @@ static const char UPLOAD_HTML[] =
     "button{background:#00D5FF;color:#000;border:none;padding:10px 20px;border-radius:8px;font-size:16px;cursor:pointer;}\n"
     "button:disabled{background:#8A93A6;cursor:not-allowed;}\n"
     "#status{margin-top:15px;font-weight:bold;min-height:20px;}\n"
+    "#statusInfo{color:#8A93A6;margin-bottom:15px;font-size:14px;}\n"
     ".progress{width:100%;background:#263143;border-radius:4px;overflow:hidden;margin-top:10px;display:none;}\n"
     ".progress-bar{height:8px;background:#00D5FF;width:0%;transition:width 0.2s;}\n"
     "</style>\n"
@@ -218,13 +222,24 @@ static const char UPLOAD_HTML[] =
     "<body>\n"
     "<h1>Wi-Fi Upload</h1>\n"
     "<div class='card'>\n"
-    "<p>Select <b>.pcm</b> or <b>.bmp</b> files.</p>\n"
+    "<div id='statusInfo'>Loading SD card info...</div>\n"
+    "<p>Select <b>.pcm</b> files (Raw 44.1kHz 16-bit Stereo).</p>\n"
     "<input type='file' id='fileInput' multiple accept='.pcm,.bmp'><br>\n"
     "<button id='uploadBtn' onclick='uploadFiles()'>Upload</button>\n"
     "<div class='progress' id='progressContainer'><div class='progress-bar' id='progressBar'></div></div>\n"
     "<div id='status'></div>\n"
     "</div>\n"
     "<script>\n"
+    "async function loadStatus(){\n"
+    "  try{\n"
+    "    const res=await fetch('/status');\n"
+    "    const data=await res.json();\n"
+    "    document.getElementById('statusInfo').innerText=\n"
+    "      'Free Space: '+(data.free_mb>=0?data.free_mb+' MB':'Unknown')+ ' | Tracks: '+data.files.length;\n"
+    "  }catch(e){\n"
+    "    document.getElementById('statusInfo').innerText='Error reading SD card status.';\n"
+    "  }\n"
+    "}\n"
     "async function uploadFiles(){\n"
     "  const files=document.getElementById('fileInput').files;\n"
     "  const status=document.getElementById('status');\n"
@@ -249,6 +264,7 @@ static const char UPLOAD_HTML[] =
     "  status.textContent='All files uploaded!';\n"
     "  btn.disabled=false;\n"
     "  progBar.style.width='100%';\n"
+    "  loadStatus();\n" /* Refresh free space after upload */
     "}\n"
     "function uploadSingleFile(file,progBar){\n"
     "  return new Promise((resolve,reject)=>{\n"
@@ -267,6 +283,7 @@ static const char UPLOAD_HTML[] =
     "    xhr.send(file);\n"
     "  });\n"
     "}\n"
+    "window.onload = loadStatus;\n"
     "</script>\n"
     "</body>\n"
     "</html>\n";
@@ -306,6 +323,68 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, UPLOAD_HTML, sizeof(UPLOAD_HTML) - 1);
+    return ESP_OK;
+}
+
+static esp_err_t status_get_handler(httpd_req_t *req)
+{
+    char *buf = malloc(2048);
+    if (!buf)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OOM");
+        return ESP_FAIL;
+    }
+
+    int offset = 0;
+    offset += snprintf(buf + offset, 2048 - offset, "{\"free_mb\":");
+
+    /* Calculate free space on SD card */
+    FATFS *fs;
+    DWORD fre_clust;
+    if (f_getfree(SD_MOUNT_POINT, &fre_clust, &fs) == FR_OK)
+    {
+        /* fre_clust * csize = free sectors. Usually 512 bytes per sector. */
+        uint32_t free_mb = (fre_clust * fs->csize) / 2048;
+        offset += snprintf(buf + offset, 2048 - offset, "%lu", (unsigned long)free_mb);
+    }
+    else
+    {
+        offset += snprintf(buf + offset, 2048 - offset, "-1");
+    }
+
+    offset += snprintf(buf + offset, 2048 - offset, ",\"files\":[");
+
+    /* List existing .pcm files */
+    DIR *dir = opendir(SD_MOUNT_POINT);
+    if (dir)
+    {
+        struct dirent *entry;
+        bool first = true;
+        while ((entry = readdir(dir)) != NULL)
+        {
+            if (entry->d_type == DT_REG)
+            {
+                const char *name = entry->d_name;
+                int len = strlen(name);
+                if (len > 4 && strcasecmp(name + len - 4, ".pcm") == 0)
+                {
+                    if (!first)
+                        offset += snprintf(buf + offset, 2048 - offset, ",");
+                    offset += snprintf(buf + offset, 2048 - offset, "\"%s\"", name);
+                    first = false;
+                    if (offset > 1900)
+                        break; /* Prevent buffer overflow */
+                }
+            }
+        }
+        closedir(dir);
+    }
+
+    offset += snprintf(buf + offset, 2048 - offset, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, buf, offset);
+    free(buf);
     return ESP_OK;
 }
 
@@ -458,6 +537,13 @@ static void http_upload_server_start(void)
         .handler = upload_post_handler,
     };
     httpd_register_uri_handler(upload_server, &upload_uri);
+
+    httpd_uri_t status_uri = {
+        .uri = "/status",
+        .method = HTTP_GET,
+        .handler = status_get_handler,
+    };
+    httpd_register_uri_handler(upload_server, &status_uri);
 
     ESP_LOGI(TAG, "HTTP upload server started");
 }
@@ -627,6 +713,20 @@ static void wifi_transfer_start(void)
         ESP_LOGI(TAG, "Wi-Fi transfer AP active: SSID=%s, URL=%s",
                  WIFI_AP_SSID, WIFI_TRANSFER_URL);
     }
+
+    /* Initialize mDNS so users can use http://esp-audio.local */
+    esp_err_t mdns_err = mdns_init();
+    if (mdns_err == ESP_OK)
+    {
+        mdns_hostname_set("esp-audio");
+        mdns_instance_name_set("ESP Audio Player Upload");
+        mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+        ESP_LOGI(TAG, "mDNS started: http://esp-audio.local");
+    }
+    else
+    {
+        ESP_LOGW(TAG, "mDNS init failed: %s", esp_err_to_name(mdns_err));
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -645,6 +745,10 @@ static void wifi_transfer_stop(void)
     if (wifi_ap_running)
     {
         ESP_LOGI(TAG, "Stopping Wi-Fi transfer AP");
+
+        /* Clean up mDNS */
+        mdns_service_remove_all();
+        mdns_free();
 
         if (wifi_ap_netif != NULL)
         {

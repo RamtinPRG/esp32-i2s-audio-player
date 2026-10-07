@@ -19,6 +19,7 @@ idf_component_register(SRCS "cover_cache.c" "ui.c" "main.c"
                         nvs_flash
                         esp_netif
                         esp_http_server
+                        mdns
                         
                     INCLUDE_DIRS ".")
 

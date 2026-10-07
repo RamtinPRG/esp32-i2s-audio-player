@@ -3,3 +3,4 @@ dependencies:
   lvgl/lvgl: ^9.5.0
   espressif/knob: ^1.1.0
   espressif/button: ^4.2.1
+  espressif/mdns: ^1.14.0
