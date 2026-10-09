@@ -1,4 +1,4 @@
-idf_component_register(SRCS "wifi_transfer.c" "http_upload.c" "input_knob.c" "audio_player.c" "playlist.c" "audio_output.c" "bsp_sdcard.c" "bsp_display.c" "cover_cache.c" "ui.c" "main.c"
+idf_component_register(SRCS "app_mode.c" "wifi_transfer.c" "http_upload.c" "input_knob.c" "audio_player.c" "playlist.c" "audio_output.c" "bsp_sdcard.c" "bsp_display.c" "cover_cache.c" "ui.c" "main.c"
                     PRIV_REQUIRES
                         esp_driver_i2s
                         esp_driver_gpio
