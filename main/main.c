@@ -53,6 +53,7 @@
 #include "bsp_display.h"
 #include "bsp_sdcard.h"
 #include "audio_output.h"
+#include "playlist.h"
 
 static const char *TAG = "I2S_SD";
 
@@ -66,14 +67,6 @@ typedef struct
     uint8_t *data;
     size_t len;
 } audio_buffer_t;
-
-typedef struct
-{
-    char files[MAX_FILES][MAX_PATH_LEN];
-    cover_entry_t covers[MAX_FILES];
-    int count;
-    int current_index;
-} playlist_t;
 
 /* --------------------------------------------------------------------------
  * Global playlist and audio system state
@@ -1242,86 +1235,6 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
     }
 }
 
-static int compare_strings(const void *a, const void *b)
-{
-    return strcmp((const char *)a, (const char *)b);
-}
-
-/*
- * Scans the SD card for .pcm files and builds a sorted playlist.
- */
-static esp_err_t build_playlist(playlist_t *playlist)
-{
-    DIR *dir = opendir(SD_MOUNT_POINT);
-    if (!dir)
-    {
-        ESP_LOGE(TAG, "Failed to open directory %s", SD_MOUNT_POINT);
-        return ESP_FAIL;
-    }
-
-    playlist->count = 0;
-    struct dirent *entry;
-
-    ESP_LOGI(TAG, "Scanning for .pcm files...");
-
-    while ((entry = readdir(dir)) != NULL && playlist->count < MAX_FILES)
-    {
-        if (entry->d_type == DT_REG)
-        {
-            const char *name = entry->d_name;
-            int len = strlen(name);
-            if (len > 4 && strcasecmp(name + len - 4, ".pcm") == 0)
-            {
-                snprintf(playlist->files[playlist->count], MAX_PATH_LEN, "%s/%s", SD_MOUNT_POINT, name);
-                playlist->count++;
-            }
-        }
-    }
-    closedir(dir);
-
-    if (playlist->count == 0)
-    {
-        ESP_LOGE(TAG, "No .pcm files found on SD card!");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    qsort(playlist->files, playlist->count, MAX_PATH_LEN, compare_strings);
-
-    ESP_LOGI(TAG, "Found %d PCM file(s):", playlist->count);
-    for (int i = 0; i < playlist->count; i++)
-    {
-        ESP_LOGI(TAG, "  [%d] %s", i + 1, playlist->files[i]);
-    }
-
-    playlist->current_index = 0;
-    return ESP_OK;
-}
-
-static void preload_cover_art(playlist_t *playlist)
-{
-    int loaded = 0;
-
-    for (int i = 0; i < playlist->count; i++)
-    {
-        if (cover_cache_load_one(playlist->files[i], &playlist->covers[i]))
-        {
-            loaded++;
-        }
-
-        /*
-         * Optional: yield briefly so long preload loops do not starve
-         * lower priority tasks.
-         */
-        if ((i % 16) == 15)
-        {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
-    }
-
-    ESP_LOGI(TAG, "Preloaded %d/%d cover images into PSRAM",
-             loaded, playlist->count);
-}
-
 /*
  * Task that reads audio data from the SD card playlist.
  */
@@ -1638,7 +1551,7 @@ static void start_player_mode(bool from_transfer)
         lvgl_port_unlock();
     }
 
-    esp_err_t ret = build_playlist(&playlist);
+    esp_err_t ret = playlist_build(&playlist);
 
     if (ret != ESP_OK)
     {
@@ -1669,7 +1582,7 @@ static void start_player_mode(bool from_transfer)
         lvgl_port_unlock();
     }
 
-    preload_cover_art(&playlist);
+    playlist_preload_covers(&playlist);
 
     if (lvgl_port_lock(500))
     {
