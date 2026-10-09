@@ -52,6 +52,7 @@
 #include "app_config.h"
 #include "bsp_display.h"
 #include "bsp_sdcard.h"
+#include "audio_output.h"
 
 static const char *TAG = "I2S_SD";
 
@@ -1241,33 +1242,6 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
     }
 }
 
-/*
- * Initialize I2S standard mode: 44100 Hz, 16-bit, stereo.
- */
-static void i2s_init_std(void)
-{
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 6;
-    chan_cfg.dma_frame_num = 512;
-
-    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_chan, NULL));
-
-    i2s_std_config_t std_cfg = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
-        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S_PIN_BCLK,
-            .ws = I2S_PIN_WS,
-            .dout = I2S_PIN_DOUT,
-            .din = I2S_GPIO_UNUSED,
-            .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
-        },
-    };
-
-    ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &std_cfg));
-}
-
 static int compare_strings(const void *a, const void *b)
 {
     return strcmp((const char *)a, (const char *)b);
@@ -1603,7 +1577,7 @@ static void audio_system_start(void)
         ESP_LOGI(TAG, "Initializing audio system");
 
         /* Initialize I2S */
-        i2s_init_std();
+        ESP_ERROR_CHECK(audio_output_init(&tx_chan));
 
         /* Create buffer queues */
         free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
