@@ -54,25 +54,14 @@
 #include "bsp_sdcard.h"
 #include "audio_output.h"
 #include "playlist.h"
+#include "audio_player.h"
 
 static const char *TAG = "I2S_SD";
-
-static i2s_chan_handle_t tx_chan;
-
-static QueueHandle_t free_buffer_queue = NULL;
-static QueueHandle_t audio_data_queue = NULL;
-
-typedef struct
-{
-    uint8_t *data;
-    size_t len;
-} audio_buffer_t;
 
 /* --------------------------------------------------------------------------
  * Global playlist and audio system state
  * -------------------------------------------------------------------------- */
 static playlist_t playlist;
-static bool audio_system_initialized = false;
 
 /* --------------------------------------------------------------------------
  * Encoder / UI mode state machine
@@ -86,13 +75,6 @@ typedef enum
     INPUT_EVT_LONG_PRESS,
     INPUT_EVT_AUTO_HIDE_VOLUME,
 } input_event_t;
-
-typedef enum
-{
-    PLAYER_CMD_NEXT = 0,
-    PLAYER_CMD_PREV,
-    PLAYER_CMD_TOGGLE_PLAY,
-} player_cmd_t;
 
 typedef enum
 {
@@ -127,7 +109,6 @@ static boot_option_t boot_option = BOOT_OPT_PLAYER;
 
 static volatile uint8_t app_volume = 100;
 static volatile bool app_mute = false;
-static volatile bool app_playing = true;
 
 static int64_t last_volume_activity_us = 0;
 
@@ -899,12 +880,15 @@ static void change_volume(int delta)
         app_mute = false;
     }
 
+    audio_player_set_volume(app_volume, app_mute);
     ui_apply_volume_and_mute();
 }
 
 static void toggle_mute(void)
 {
     app_mute = !app_mute;
+
+    audio_player_set_volume(app_volume, app_mute);
     ui_apply_volume_and_mute();
 }
 
@@ -1168,370 +1152,6 @@ static void encoder_input_init(void)
 }
 
 /* --------------------------------------------------------------------------
- * Audio control helpers
- * -------------------------------------------------------------------------- */
-
-static void flush_audio_data_queue(void)
-{
-    audio_buffer_t tmp;
-
-    /*
-     * Move any queued full audio buffers back to the free queue.
-     *
-     * This is used for:
-     * - pause
-     * - next track
-     * - previous track
-     *
-     * A few samples may still be in the I2S DMA, but this keeps the skip
-     * latency low without needing to tear down the I2S channel.
-     */
-    while (xQueueReceive(audio_data_queue, &tmp, 0) == pdTRUE)
-    {
-        xQueueSend(free_buffer_queue, &tmp, pdMS_TO_TICKS(10));
-    }
-}
-
-static void apply_volume_to_buffer(audio_buffer_t *buf)
-{
-    if (buf == NULL || buf->data == NULL || buf->len == 0)
-    {
-        return;
-    }
-
-    bool mute = app_mute;
-    uint8_t volume = app_volume;
-
-    if (mute || volume == 0)
-    {
-        memset(buf->data, 0, buf->len);
-        return;
-    }
-
-    if (volume >= 100)
-    {
-        return;
-    }
-
-    int16_t *samples = (int16_t *)buf->data;
-    size_t sample_count = buf->len / sizeof(int16_t);
-
-    /*
-     * Simple linear volume:
-     *
-     *     out = in * volume / 100
-     *
-     * If you want a more perceptual volume curve, replace this with:
-     *
-     *     uint32_t gain = (volume * volume) / 100;
-     *
-     * or use a lookup table.
-     */
-    int32_t gain = volume * volume / 100;
-
-    for (size_t i = 0; i < sample_count; i++)
-    {
-        samples[i] = (int16_t)(((int32_t)samples[i] * gain) / 100);
-    }
-}
-
-/*
- * Task that reads audio data from the SD card playlist.
- */
-static void sd_read_task(void *arg)
-{
-    playlist_t *playlist = (playlist_t *)arg;
-    audio_buffer_t buf;
-    FILE *f = NULL;
-
-    uint32_t track_bytes_read = 0;
-    uint32_t last_elapsed_sec = 0;
-
-    while (1)
-    {
-        /* ------------------------------------------------------------
-         * Handle player commands from encoder/input task
-         * ------------------------------------------------------------ */
-        player_cmd_t cmd;
-
-        while (xQueueReceive(player_cmd_queue, &cmd, 0) == pdTRUE)
-        {
-            if (cmd == PLAYER_CMD_NEXT || cmd == PLAYER_CMD_PREV)
-            {
-                if (f != NULL)
-                {
-                    fclose(f);
-                    f = NULL;
-                }
-
-                flush_audio_data_queue();
-
-                if (cmd == PLAYER_CMD_NEXT)
-                {
-                    playlist->current_index =
-                        (playlist->current_index + 1) % playlist->count;
-                }
-                else
-                {
-                    playlist->current_index =
-                        (playlist->current_index - 1 + playlist->count) % playlist->count;
-                }
-            }
-            else if (cmd == PLAYER_CMD_TOGGLE_PLAY)
-            {
-                app_playing = !app_playing;
-
-                // if (!app_playing)
-                // {
-                //     flush_audio_data_queue();
-                // }
-
-                if (lvgl_port_lock(500))
-                {
-                    ui_update_playback(app_playing);
-                    lvgl_port_unlock();
-                }
-            }
-        }
-
-        /* ------------------------------------------------------------
-         * Open current track if needed
-         * ------------------------------------------------------------ */
-        if (f == NULL)
-        {
-            const char *filepath = playlist->files[playlist->current_index];
-            ESP_LOGI(TAG, "Opening track %d/%d: %s", playlist->current_index + 1, playlist->count, filepath);
-
-            f = fopen(filepath, "rb");
-            if (f == NULL)
-            {
-                ESP_LOGE(TAG, "Failed to open file: %s", filepath);
-                playlist->current_index = (playlist->current_index + 1) % playlist->count;
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
-
-            // Get file size for logging
-            fseek(f, 0, SEEK_END);
-            long size = ftell(f);
-            fseek(f, 0, SEEK_SET);
-
-            // Calculate duration: 44100 Hz * 2 channels * 2 bytes = 176400 bytes/sec
-            float duration_sec_f = size / 176400.0f;
-            uint32_t duration_sec = (uint32_t)duration_sec_f;
-            int mins = (int)duration_sec_f / 60;
-            int secs = (int)duration_sec_f % 60;
-            ESP_LOGI(TAG, "▶ Started playing: %s (%.2f MB, %02d:%02d)", filepath, size / (1024.0f * 1024.0f), mins, secs);
-
-            track_bytes_read = 0;
-            last_elapsed_sec = 0;
-
-            // --- Check for corresponding .bmp cover art ---
-            const void *img_arg = NULL;
-
-            if (playlist->covers[playlist->current_index].valid)
-            {
-                img_arg = &playlist->covers[playlist->current_index].dsc;
-            }
-
-            /* Thread-safe UI update */
-            if (lvgl_port_lock(500))
-            {
-                ui_notify_track_started(filepath, img_arg, playlist->current_index + 1, playlist->count, duration_sec);
-
-                /*
-                 * If the user changed track while paused, keep the UI in the
-                 * paused state.
-                 */
-                ui_update_playback(app_playing);
-
-                lvgl_port_unlock();
-            }
-        }
-
-        /* ------------------------------------------------------------
-         * If paused, send silence buffers to flush I2S DMA
-         * ------------------------------------------------------------ */
-        if (!app_playing)
-        {
-            if (xQueueReceive(free_buffer_queue, &buf, pdMS_TO_TICKS(10)) == pdTRUE)
-            {
-                memset(buf.data, 0, AUDIO_BUFF_SIZE);
-                buf.len = AUDIO_BUFF_SIZE;
-
-                if (xQueueSend(audio_data_queue, &buf, pdMS_TO_TICKS(10)) != pdTRUE)
-                {
-                    // Return buffer to free queue if send timed out
-                    xQueueSend(free_buffer_queue, &buf, 0);
-                }
-            }
-            continue;
-        }
-
-        /* ------------------------------------------------------------
-         * Get an empty buffer
-         * ------------------------------------------------------------ */
-        if (xQueueReceive(free_buffer_queue, &buf, portMAX_DELAY) != pdTRUE)
-        {
-            continue;
-        }
-
-        /* ------------------------------------------------------------
-         * Read from SD card
-         * ------------------------------------------------------------ */
-        size_t bytes_read = fread(buf.data, 1, AUDIO_BUFF_SIZE, f);
-
-        if (bytes_read == 0)
-        {
-            ESP_LOGI(TAG, "⏹ Finished playing: %s", playlist->files[playlist->current_index]);
-
-            /* Thread-safe UI update */
-            if (lvgl_port_lock(500))
-            {
-                ui_notify_track_finished(playlist->files[playlist->current_index]);
-                lvgl_port_unlock();
-            }
-
-            fclose(f);
-            f = NULL;
-
-            /* Move to next track */
-            playlist->current_index = (playlist->current_index + 1) % playlist->count;
-
-            /* Return the empty buffer to the free queue */
-            xQueueSend(free_buffer_queue, &buf, 0);
-
-            // Small delay to let I2S DMA finish playing the last buffers smoothly
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        buf.len = bytes_read;
-
-        track_bytes_read += bytes_read;
-        uint32_t current_elapsed_sec = track_bytes_read / 176400;
-
-        if (current_elapsed_sec != last_elapsed_sec)
-        {
-            /* Use a short timeout so UI locking doesn't stutter the audio DMA */
-            if (lvgl_port_lock(10))
-            {
-                ui_update_elapsed(current_elapsed_sec);
-                lvgl_port_unlock();
-                last_elapsed_sec = current_elapsed_sec;
-            }
-        }
-
-        /* Send filled buffer to I2S writer */
-        if (xQueueSend(audio_data_queue, &buf, portMAX_DELAY) != pdTRUE)
-        {
-            ESP_LOGE(TAG, "Failed to send audio buffer to data queue");
-        }
-    }
-}
-
-/*
- * Task that writes audio data to I2S.
- */
-static void i2s_write_task(void *arg)
-{
-    (void)arg;
-
-    audio_buffer_t buf;
-
-    ESP_ERROR_CHECK(i2s_channel_enable(tx_chan));
-
-    while (1)
-    {
-        if (xQueueReceive(audio_data_queue, &buf, portMAX_DELAY) != pdTRUE)
-        {
-            continue;
-        }
-
-        /* Apply software volume/mute */
-        apply_volume_to_buffer(&buf);
-
-        size_t offset = 0;
-
-        while (offset < buf.len)
-        {
-            size_t bytes_written = 0;
-
-            esp_err_t ret = i2s_channel_write(
-                tx_chan,
-                buf.data + offset,
-                buf.len - offset,
-                &bytes_written,
-                portMAX_DELAY);
-
-            if (ret != ESP_OK)
-            {
-                ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-                break;
-            }
-
-            offset += bytes_written;
-        }
-
-        /* Return buffer to read task */
-        xQueueSend(free_buffer_queue, &buf, 0);
-    }
-}
-
-/* --------------------------------------------------------------------------
- * Start the audio system lazily.
- *
- * This is called only when we actually enter Player mode.
- * -------------------------------------------------------------------------- */
-static void audio_system_start(void)
-{
-    if (!audio_system_initialized)
-    {
-        ESP_LOGI(TAG, "Initializing audio system");
-
-        /* Initialize I2S */
-        ESP_ERROR_CHECK(audio_output_init(&tx_chan));
-
-        /* Create buffer queues */
-        free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
-        audio_data_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
-
-        assert(free_buffer_queue != NULL);
-        assert(audio_data_queue != NULL);
-
-        /* Allocate DMA-capable audio buffers */
-        for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
-        {
-            uint8_t *mem = heap_caps_calloc(
-                AUDIO_BUFF_SIZE,
-                1,
-                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-
-            if (mem == NULL)
-            {
-                ESP_LOGE(TAG, "Failed to allocate DMA-capable audio buffer");
-                abort();
-            }
-
-            audio_buffer_t buf = {
-                .data = mem,
-                .len = 0,
-            };
-
-            xQueueSend(free_buffer_queue, &buf, 0);
-        }
-
-        /* Create audio tasks */
-        xTaskCreate(sd_read_task, "sd_read_task", 8192, &playlist, 6, NULL);
-        xTaskCreate(i2s_write_task, "i2s_write_task", 4096, NULL, 5, NULL);
-
-        audio_system_initialized = true;
-    }
-
-    app_playing = true;
-}
-
-/* --------------------------------------------------------------------------
  * Enter normal Player mode.
  *
  * This scans the SD card, loads cover art, and starts audio playback.
@@ -1590,7 +1210,32 @@ static void start_player_mode(bool from_transfer)
         lvgl_port_unlock();
     }
 
-    audio_system_start();
+    esp_err_t audio_ret = audio_player_start(&playlist, player_cmd_queue);
+
+    if (audio_ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start audio player");
+
+        if (lvgl_port_lock(500))
+        {
+            ui_set_status("Audio init failed!");
+            lvgl_port_unlock();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1500));
+
+        if (lvgl_port_lock(500))
+        {
+            ui_show_boot_menu(true);
+            ui_set_boot_selection(boot_option);
+            lvgl_port_unlock();
+        }
+
+        app_mode = APP_MODE_BOOT_MENU;
+        return;
+    }
+
+    audio_player_set_volume(app_volume, app_mute);
 
     app_mode = APP_MODE_PLAYER;
 }
@@ -1606,7 +1251,7 @@ static void start_player_mode(bool from_transfer)
 static void enter_transfer_from_boot_menu(void)
 {
     app_mode = APP_MODE_BUSY;
-    app_playing = false;
+    audio_player_set_playback(false);
 
     if (lvgl_port_lock(500))
     {
