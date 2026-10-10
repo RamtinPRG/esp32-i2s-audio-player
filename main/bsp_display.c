@@ -27,7 +27,7 @@ void bsp_display_init(void)
         .miso_io_num = -1,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * 80 * sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * 70 * sizeof(uint16_t),
     };
 
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
@@ -69,9 +69,12 @@ void bsp_display_init(void)
         .panel_handle = panel_handle,
         .hres = LCD_H_RES,
         .vres = LCD_V_RES,
-        .buffer_size = LCD_H_RES * 40,
+        .buffer_size = LCD_H_RES * 70,
         .double_buffer = true,
         .color_format = LV_COLOR_FORMAT_RGB565,
+        .flags = {
+            .buff_dma = true,
+        },
     };
 
     lv_display_t *disp = lvgl_port_add_disp(&disp_cfg);
