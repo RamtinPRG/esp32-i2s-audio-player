@@ -1,0 +1,2021 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESP-AudioPlayer — Architecture</title>
+    <style>
+      :root {
+        --bg: #08090c;
+        --card: #121620;
+        --card-2: #0e1119;
+        --border: #263143;
+        --primary: #f2f6ff;
+        --secondary: #8a93a6;
+        --accent: #00d5ff;
+        --accent-2: #e600b3;
+        --error: #ff4b7e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--primary);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(
+            900px 400px at 10% -5%,
+            rgba(0, 213, 255, 0.1),
+            transparent 60%
+          ),
+          radial-gradient(
+            900px 400px at 95% 0%,
+            rgba(230, 0, 179, 0.08),
+            transparent 60%
+          );
+        z-index: 0;
+      }
+      .wrap {
+        position: relative;
+        z-index: 1;
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 48px 22px 96px;
+      }
+      header.hero {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 28px;
+        margin-bottom: 42px;
+      }
+      .eyebrow {
+        display: inline-block;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent);
+        border: 1px solid rgba(0, 213, 255, 0.35);
+        border-radius: 999px;
+        padding: 4px 12px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        font-size: clamp(28px, 4.2vw, 44px);
+        line-height: 1.15;
+        margin: 0 0 12px;
+        letter-spacing: -0.02em;
+      }
+      h1 .grad {
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .sub {
+        color: var(--secondary);
+        max-width: 760px;
+        font-size: 15.5px;
+        margin: 0;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 22px;
+      }
+      .chip {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--secondary);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 10px;
+      }
+      section {
+        margin-bottom: 54px;
+      }
+      .sec-head {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 8px;
+      }
+      .sec-num {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        color: var(--accent);
+        letter-spacing: 0.1em;
+      }
+      h2 {
+        font-size: 21px;
+        margin: 0;
+        letter-spacing: -0.01em;
+      }
+      .sec-desc {
+        color: var(--secondary);
+        font-size: 14.5px;
+        margin: 0 0 20px;
+        max-width: 860px;
+      }
+      .diagram {
+        background: linear-gradient(180deg, var(--card) 0%, var(--card-2) 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 22px 16px;
+        overflow-x: auto;
+      }
+      .diagram svg {
+        display: block;
+        margin: 0 auto;
+      }
+      .note {
+        margin-top: 14px;
+        border-left: 2px solid var(--accent);
+        background: rgba(0, 213, 255, 0.05);
+        border-radius: 0 8px 8px 0;
+        padding: 10px 16px;
+        font-size: 13.5px;
+        color: var(--secondary);
+      }
+      .note b {
+        color: var(--primary);
+        font-weight: 600;
+      }
+      .note.warn {
+        border-left-color: var(--error);
+        background: rgba(255, 75, 126, 0.06);
+      }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 18px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13.5px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      caption {
+        caption-side: top;
+        text-align: left;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        padding: 0 0 10px;
+      }
+      th,
+      td {
+        padding: 9px 14px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        background: rgba(38, 49, 67, 0.45);
+        color: var(--secondary);
+        font-weight: 600;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr:hover {
+        background: rgba(0, 213, 255, 0.04);
+      }
+      td code,
+      p code,
+      li code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12.5px;
+        background: rgba(0, 213, 255, 0.08);
+        border: 1px solid rgba(0, 213, 255, 0.18);
+        border-radius: 4px;
+        padding: 1px 5px;
+        color: #9fe8ff;
+      }
+      ul.clean {
+        margin: 0;
+        padding-left: 18px;
+        color: var(--secondary);
+        font-size: 14px;
+      }
+      ul.clean li {
+        margin-bottom: 6px;
+      }
+      ul.clean b {
+        color: var(--primary);
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        margin-top: 60px;
+        padding-top: 22px;
+        color: var(--secondary);
+        font-size: 13px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .filelist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 12px;
+      }
+      .filelist span {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+        color: var(--secondary);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 3px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hero">
+        <div class="eyebrow">ESP-IDF · LVGL 9 · FreeRTOS</div>
+        <h1>
+          ESP-AudioPlayer<br /><span class="grad">System Architecture</span>
+        </h1>
+        <p class="sub">
+          A single-chip PCM audio player and Wi-Fi upload target built on ESP32.
+          It streams raw 44.1 kHz / 16-bit stereo from an SD card over I2S,
+          drives a 240x280 ST7789 display through LVGL, and exposes a SoftAP +
+          HTTP upload portal for adding new tracks.
+        </p>
+        <div class="meta-row">
+          <span class="chip">I2S STD 44.1 kHz</span>
+          <span class="chip">SPI2 SD / FATFS</span>
+          <span class="chip">SPI3 ST7789</span>
+          <span class="chip">SoftAP + HTTP</span>
+          <span class="chip">6 x 4 KB DMA buffers</span>
+        </div>
+      </header>
+
+      <!-- 01 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">01</span>
+          <h2>Layered Architecture</h2>
+        </div>
+        <p class="sec-desc">
+          Four layers. <code>main.c</code> only wires things together; all
+          behaviour lives in the service and BSP layers.
+        </p>
+        <div class="diagram" id="d1"></div>
+        <div class="filelist">
+          <span>main.c</span><span>app_mode.c/.h</span><span>app_types.h</span>
+          <span>app_config.h</span><span>ui.c/.h</span
+          ><span>audio_player.c/.h</span> <span>audio_output.c/.h</span
+          ><span>playlist.c/.h</span><span>cover_cache.c/.h</span>
+          <span>bsp_display.c/.h</span><span>bsp_sdcard.c/.h</span
+          ><span>input_knob.c/.h</span> <span>wifi_transfer.c/.h</span
+          ><span>http_upload.c/.h</span><span>upload.html</span>
+        </div>
+      </section>
+
+      <!-- 02 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">02</span>
+          <h2>Boot Sequence</h2>
+        </div>
+        <p class="sec-desc">
+          <code>app_main()</code> brings up the display first so the user gets
+          immediate feedback while the SD card is probed, then starts the mode
+          controller and the input subsystem.
+        </p>
+        <div class="diagram" id="d2"></div>
+      </section>
+
+      <!-- 03 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">03</span>
+          <h2>Application Mode State Machine</h2>
+        </div>
+        <p class="sec-desc">
+          <code>app_mode.c</code> owns a single
+          <code>volatile app_mode_t</code>. The input task reads it;
+          <code>app_control_task</code> is the only writer that performs heavy
+          transitions.
+        </p>
+        <div class="diagram" id="d3"></div>
+        <div class="note warn">
+          <b>No return path from PLAYER.</b> Once
+          <code>start_player_mode()</code> succeeds, no command sends the app
+          back to <code>BOOT_MENU</code>. Switching to upload mode after
+          playback requires a reboot.
+        </div>
+      </section>
+
+      <!-- 04 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">04</span>
+          <h2>Tasks, Queues and Concurrency</h2>
+        </div>
+        <p class="sec-desc">
+          Everything is decoupled through FreeRTOS queues. Only the input task
+          and the LVGL port call into <code>ui.c</code>, always behind
+          <code>lvgl_port_lock()</code>.
+        </p>
+        <div class="diagram" id="d4"></div>
+        <div class="note">
+          <b>Backpressure design.</b> The audio path uses a classic free / ready
+          buffer pool. <code>sd_read_task</code> blocks on the free queue,
+          <code>i2s_write_task</code> blocks on the data queue, and the I2S DMA
+          provides the final rate limit.
+        </div>
+      </section>
+
+      <!-- 05 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">05</span>
+          <h2>Audio Pipeline</h2>
+        </div>
+        <p class="sec-desc">
+          Raw PCM is read from FATFS in 4 KB chunks, scaled in software for
+          volume and mute, then pushed into the I2S DMA.
+        </p>
+        <div class="diagram" id="d5"></div>
+        <div class="grid-2" style="margin-top: 18px">
+          <div>
+            <table>
+              <caption>
+                Buffer geometry
+              </caption>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Value</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Chunk size</td>
+                  <td>4096 B</td>
+                  <td><code>AUDIO_BUFF_SIZE</code></td>
+                </tr>
+                <tr>
+                  <td>Buffer count</td>
+                  <td>6</td>
+                  <td><code>AUDIO_BUFFER_COUNT</code></td>
+                </tr>
+                <tr>
+                  <td>Total pool</td>
+                  <td>24 KB</td>
+                  <td>DMA-capable internal</td>
+                </tr>
+                <tr>
+                  <td>DMA descriptors</td>
+                  <td>6 x 512 frames</td>
+                  <td><code>audio_output.c</code></td>
+                </tr>
+                <tr>
+                  <td>Bytes per second</td>
+                  <td>176400</td>
+                  <td>44100 x 2ch x 2B</td>
+                </tr>
+                <tr>
+                  <td>Buffer duration</td>
+                  <td>about 23 ms</td>
+                  <td>4096 / 176400</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                Volume curve
+              </caption>
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Behaviour</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Mute or 0 percent</td>
+                  <td>memset the whole buffer</td>
+                </tr>
+                <tr>
+                  <td>100 percent or more</td>
+                  <td>early return, no processing</td>
+                </tr>
+                <tr>
+                  <td>1 to 99 percent</td>
+                  <td><code>gain = vol*vol/100</code></td>
+                </tr>
+                <tr>
+                  <td>Applied in</td>
+                  <td><code>i2s_write_task</code></td>
+                </tr>
+                <tr>
+                  <td>Storage</td>
+                  <td>volatile uint8_t + volatile bool</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 06 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">06</span>
+          <h2>Wi-Fi Transfer Mode</h2>
+        </div>
+        <p class="sec-desc">
+          Upload mode starts a SoftAP on <code>192.168.4.1</code> and an HTTP
+          server on port 80. Files are written to a <code>.tmp</code> path first
+          and renamed on success.
+        </p>
+        <div class="diagram" id="d6"></div>
+        <div class="grid-2" style="margin-top: 18px">
+          <div>
+            <table>
+              <caption>
+                HTTP endpoints
+              </caption>
+              <thead>
+                <tr>
+                  <th>Route</th>
+                  <th>Method</th>
+                  <th>Purpose</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>/</code></td>
+                  <td>GET</td>
+                  <td>Serves embedded <code>upload.html</code></td>
+                </tr>
+                <tr>
+                  <td><code>/status</code></td>
+                  <td>GET</td>
+                  <td>Free MB plus PCM listing as JSON</td>
+                </tr>
+                <tr>
+                  <td><code>/upload</code></td>
+                  <td>POST</td>
+                  <td>Streams body to SD, requires <code>?filename=</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                Filename validation rules
+              </caption>
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Length</td>
+                  <td>5 to 64 characters</td>
+                </tr>
+                <tr>
+                  <td>Extension</td>
+                  <td><code>.pcm</code> or <code>.bmp</code></td>
+                </tr>
+                <tr>
+                  <td>Allowed chars</td>
+                  <td>alnum, dot, dash, underscore</td>
+                </tr>
+                <tr>
+                  <td>Write strategy</td>
+                  <td><code>.tmp</code> then remove then rename</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 07 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">07</span>
+          <h2>Cover Art Subsystem</h2>
+        </div>
+        <p class="sec-desc">
+          <code>playlist_preload_covers()</code> converts every
+          <code>song.bmp</code> next to a <code>song.pcm</code> into a 140x140
+          RGB565 LVGL image descriptor backed by PSRAM.
+        </p>
+        <div class="diagram" id="d7"></div>
+        <div class="note warn">
+          <b>PSRAM budget.</b> Each cover costs 140 x 140 x 2 = 39200 bytes.
+          With <code>MAX_FILES = 128</code> a fully covered library needs about
+          4.8 MB of PSRAM held resident for the whole session.
+        </div>
+      </section>
+
+      <!-- 08 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">08</span>
+          <h2>Input and Interaction Model</h2>
+        </div>
+        <p class="sec-desc">
+          One rotary encoder with a push switch drives the entire UI. Its
+          meaning depends on <code>app_mode_t</code> and, inside player mode, on
+          <code>input_ui_mode_t</code>.
+        </p>
+        <div class="diagram" id="d8"></div>
+        <div class="note">
+          <b>Long-press guard.</b> Short presses arriving within
+          <code>LONG_PRESS_GUARD_US</code> (500 ms) of a long press are
+          suppressed, preventing accidental play/pause when leaving volume mode.
+        </div>
+      </section>
+
+      <!-- 09 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">09</span>
+          <h2>Pin Map and Key Configuration</h2>
+        </div>
+        <div class="grid-2">
+          <div>
+            <table>
+              <caption>
+                I2S audio output
+              </caption>
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>GPIO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>BCLK</td>
+                  <td>38</td>
+                </tr>
+                <tr>
+                  <td>WS (LRCLK)</td>
+                  <td>40</td>
+                </tr>
+                <tr>
+                  <td>DOUT</td>
+                  <td>39</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                SD card (SPI2)
+              </caption>
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>GPIO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>MOSI</td>
+                  <td>5</td>
+                </tr>
+                <tr>
+                  <td>MISO</td>
+                  <td>4</td>
+                </tr>
+                <tr>
+                  <td>CLK</td>
+                  <td>6</td>
+                </tr>
+                <tr>
+                  <td>CS</td>
+                  <td>7</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                ST7789 display (SPI3)
+              </caption>
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>GPIO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>SCLK</td>
+                  <td>10</td>
+                </tr>
+                <tr>
+                  <td>MOSI</td>
+                  <td>11</td>
+                </tr>
+                <tr>
+                  <td>RST</td>
+                  <td>12</td>
+                </tr>
+                <tr>
+                  <td>DC</td>
+                  <td>13</td>
+                </tr>
+                <tr>
+                  <td>CS</td>
+                  <td>14</td>
+                </tr>
+                <tr>
+                  <td>Pixel clock</td>
+                  <td>40 MHz</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                Rotary encoder
+              </caption>
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>GPIO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Encoder A</td>
+                  <td>16</td>
+                </tr>
+                <tr>
+                  <td>Encoder B</td>
+                  <td>17</td>
+                </tr>
+                <tr>
+                  <td>Switch active low</td>
+                  <td>18</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                Limits and sizes
+              </caption>
+              <thead>
+                <tr>
+                  <th>Macro</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>MAX_FILES</code></td>
+                  <td>128</td>
+                </tr>
+                <tr>
+                  <td><code>MAX_PATH_LEN</code></td>
+                  <td>512</td>
+                </tr>
+                <tr>
+                  <td><code>AUDIO_BUFF_SIZE</code></td>
+                  <td>4096</td>
+                </tr>
+                <tr>
+                  <td><code>AUDIO_BUFFER_COUNT</code></td>
+                  <td>6</td>
+                </tr>
+                <tr>
+                  <td><code>VOLUME_STEP</code></td>
+                  <td>1</td>
+                </tr>
+                <tr>
+                  <td><code>VOLUME_AUTO_HIDE_US</code></td>
+                  <td>3000000</td>
+                </tr>
+                <tr>
+                  <td><code>LONG_PRESS_GUARD_US</code></td>
+                  <td>500000</td>
+                </tr>
+                <tr>
+                  <td><code>COVER_ART_SIZE</code></td>
+                  <td>140 x 140</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <table>
+              <caption>
+                Transfer mode defaults
+              </caption>
+              <thead>
+                <tr>
+                  <th>Setting</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>SSID</td>
+                  <td><code>ESP-AudioPlayer</code></td>
+                </tr>
+                <tr>
+                  <td>Password</td>
+                  <td><code>audio1234</code></td>
+                </tr>
+                <tr>
+                  <td>Channel</td>
+                  <td>6</td>
+                </tr>
+                <tr>
+                  <td>AP address</td>
+                  <td>192.168.4.1</td>
+                </tr>
+                <tr>
+                  <td>mDNS host</td>
+                  <td><code>esp-audio.local</code></td>
+                </tr>
+                <tr>
+                  <td>Max clients</td>
+                  <td>1</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 10 -->
+      <section>
+        <div class="sec-head">
+          <span class="sec-num">10</span>
+          <h2>Design Notes and Watch Points</h2>
+        </div>
+        <ul class="clean">
+          <li>
+            <b>Task priorities are flat.</b> <code>app_control_task</code>,
+            <code>sd_read_task</code> and <code>input_control_task</code> all
+            run at priority 6, with <code>i2s_write_task</code> at 5. If the SD
+            reader spins on a corrupt card it can starve the I2S writer.
+          </li>
+          <li>
+            <b>Elapsed-time UI updates are rate-limited by a lock timeout.</b>
+            <code>sd_read_task</code> uses <code>lvgl_port_lock(10)</code> and
+            only advances <code>last_elapsed_sec</code> on success, so a busy UI
+            skips a second rather than blocking audio.
+          </li>
+          <li>
+            <b>Pause is implemented as silence, not a stop.</b> The read task
+            keeps pushing zeroed buffers so the I2S DMA never drains. Avoids
+            clicks on resume but burns the buffer pool while paused.
+          </li>
+          <li>
+            <b>Track changes drop in-flight audio.</b>
+            <code>flush_audio_data_queue()</code> returns queued buffers to the
+            free pool instead of draining the DMA, keeping skip latency around
+            one buffer (~23 ms).
+          </li>
+          <li>
+            <b>Wi-Fi is fully deinitialised on exit.</b>
+            <code>esp_wifi_deinit()</code> plus
+            <code>esp_netif_destroy_default_wifi()</code> frees internal RAM for
+            the cover cache.
+          </li>
+          <li>
+            <b>Playlist is built once.</b> Newly uploaded files only appear
+            after a reboot.
+          </li>
+          <li>
+            <b><code>audio_player_start()</code> is idempotent.</b> The
+            <code>s_initialized</code> guard means queues, DMA buffers and tasks
+            are created only once.
+          </li>
+        </ul>
+      </section>
+
+      <footer>
+        ESP-AudioPlayer · architecture overview · ESP-IDF + LVGL 9 + FreeRTOS
+      </footer>
+    </div>
+
+    <script>
+      /* =========================================================================
+       * Tiny SVG diagram renderer. No external libraries, no parser, no surprises.
+       * ========================================================================= */
+
+      var SVG_NS = "http://www.w3.org/2000/svg";
+
+      var STYLES = {
+        app: { fill: "#0f2231", stroke: "#00D5FF", text: "#F2F6FF" },
+        svc: { fill: "#121620", stroke: "#E600B3", text: "#F2F6FF" },
+        bsp: { fill: "#121620", stroke: "#263143", text: "#F2F6FF" },
+        hw: { fill: "#0b0d12", stroke: "#8A93A6", text: "#8A93A6" },
+        hub: { fill: "#0f2231", stroke: "#00D5FF", text: "#00D5FF" },
+        warn: { fill: "#1a0f14", stroke: "#FF4B7E", text: "#FF4B7E" },
+      };
+
+      function el(tag, attrs) {
+        var e = document.createElementNS(SVG_NS, tag);
+        if (attrs) {
+          for (var k in attrs) {
+            e.setAttribute(k, attrs[k]);
+          }
+        }
+        return e;
+      }
+
+      function makeMarker(id, color) {
+        var m = el("marker", {
+          id: id,
+          viewBox: "0 0 10 10",
+          refX: "8",
+          refY: "5",
+          markerWidth: "6",
+          markerHeight: "6",
+          orient: "auto",
+        });
+        var p = el("path", { d: "M 0 0 L 10 5 L 0 10 z", fill: color });
+        m.appendChild(p);
+        return m;
+      }
+
+      function measureText(text, fontSize) {
+        // Rough width estimate for monospace-ish rendering
+        return text.length * (fontSize * 0.58);
+      }
+
+      function renderDiagram(containerId, cfg) {
+        var container = document.getElementById(containerId);
+        if (!container) {
+          return;
+        }
+
+        var s = el("svg", {
+          viewBox: "0 0 " + cfg.w + " " + cfg.h,
+          width: "100%",
+          style:
+            "max-width:" +
+            cfg.w +
+            "px; height:auto; display:block; margin:0 auto;",
+        });
+
+        // Markers
+        var defs = el("defs");
+        defs.appendChild(makeMarker("arr-" + containerId, "#8A93A6"));
+        defs.appendChild(makeMarker("arrc-" + containerId, "#00D5FF"));
+        s.appendChild(defs);
+
+        // Node index
+        var nodes = cfg.n || [];
+        var edges = cfg.e || [];
+        var nodeById = {};
+        for (var i = 0; i < nodes.length; i++) {
+          nodeById[nodes[i].id] = nodes[i];
+        }
+
+        // Helper: intersect a ray from node center with node boundary
+        function boundaryPoint(node, ux, uy) {
+          var w = node.w || 150;
+          var h = node.h || 52;
+          var rx = w / 2;
+          var ry = h / 2;
+          var denom = Math.sqrt((ux / rx) * (ux / rx) + (uy / ry) * (uy / ry));
+          var t = denom > 0 ? 1 / denom : 1;
+          return { x: node.x + ux * t, y: node.y + uy * t };
+        }
+
+        // --- Edges ---
+        for (var j = 0; j < edges.length; j++) {
+          var edge = edges[j];
+          var f = nodeById[edge.from];
+          var t = nodeById[edge.to];
+          if (!f || !t) {
+            continue;
+          }
+
+          var dx = t.x - f.x;
+          var dy = t.y - f.y;
+          var len = Math.sqrt(dx * dx + dy * dy) || 1;
+          var ux = dx / len;
+          var uy = dy / len;
+
+          var p1 = boundaryPoint(f, ux, uy);
+          var p2 = boundaryPoint(t, -ux, -uy);
+
+          var d;
+          var labelX, labelY;
+
+          if (edge.curve) {
+            // Quadratic bezier with perpendicular offset
+            var mx = (p1.x + p2.x) / 2;
+            var my = (p1.y + p2.y) / 2;
+            var px = -uy * edge.curve;
+            var py = ux * edge.curve;
+            d =
+              "M " +
+              p1.x +
+              " " +
+              p1.y +
+              " Q " +
+              (mx + px) +
+              " " +
+              (my + py) +
+              " " +
+              p2.x +
+              " " +
+              p2.y;
+            labelX = mx + px * 0.5;
+            labelY = my + py * 0.5;
+          } else {
+            d = "M " + p1.x + " " + p1.y + " L " + p2.x + " " + p2.y;
+            labelX = (p1.x + p2.x) / 2;
+            labelY = (p1.y + p2.y) / 2;
+          }
+
+          var path = el("path", {
+            d: d,
+            fill: "none",
+            stroke: edge.color || "#8A93A6",
+            "stroke-width": edge.width || 1.5,
+            "marker-end": "url(#arr-" + containerId + ")",
+          });
+          s.appendChild(path);
+
+          if (edge.label) {
+            var lw = measureText(edge.label, 10) + 12;
+            s.appendChild(
+              el("rect", {
+                x: labelX - lw / 2,
+                y: labelY - 9,
+                width: lw,
+                height: 14,
+                rx: 3,
+                fill: "#0b0d12",
+                opacity: 0.92,
+              }),
+            );
+            var lt = el("text", {
+              x: labelX,
+              y: labelY + 1,
+              "text-anchor": "middle",
+              fill: "#9fe8ff",
+              "font-size": "10",
+              "font-family": "ui-monospace, monospace",
+            });
+            lt.textContent = edge.label;
+            s.appendChild(lt);
+          }
+        }
+
+        // --- Nodes ---
+        for (var k = 0; k < nodes.length; k++) {
+          var n = nodes[k];
+          var w = n.w || 150;
+          var h = n.h || 52;
+          var style = STYLES[n.style || "bsp"];
+
+          s.appendChild(
+            el("rect", {
+              x: n.x - w / 2,
+              y: n.y - h / 2,
+              width: w,
+              height: h,
+              rx: n.rx != null ? n.rx : 10,
+              ry: n.rx != null ? n.rx : 10,
+              fill: n.fill || style.fill,
+              stroke: n.stroke || style.stroke,
+              "stroke-width": n.sw || 1.5,
+            }),
+          );
+
+          var hasSub = !!n.sub;
+          var mainY = hasSub ? n.y - 5 : n.y + 4;
+
+          var t1 = el("text", {
+            x: n.x,
+            y: mainY,
+            "text-anchor": "middle",
+            fill: n.text || style.text,
+            "font-size": n.fs || "12",
+            "font-family": "ui-monospace, monospace",
+            "font-weight": "600",
+          });
+          t1.textContent = n.label;
+          s.appendChild(t1);
+
+          if (hasSub) {
+            var t2 = el("text", {
+              x: n.x,
+              y: n.y + 12,
+              "text-anchor": "middle",
+              fill: n.subText || "#8A93A6",
+              "font-size": "10",
+              "font-family": "ui-monospace, monospace",
+            });
+            t2.textContent = n.sub;
+            s.appendChild(t2);
+          }
+        }
+
+        container.appendChild(s);
+      }
+
+      /* =========================================================================
+       * Diagram definitions
+       * ========================================================================= */
+
+      var DIAGRAMS = {
+        /* ---------- 01 · Layered Architecture ---------- */
+        d1: {
+          w: 1040,
+          h: 660,
+          n: [
+            // App layer
+            {
+              id: "main",
+              x: 180,
+              y: 55,
+              label: "main.c",
+              sub: "app_main",
+              style: "app",
+            },
+            {
+              id: "appmode",
+              x: 520,
+              y: 55,
+              label: "app_mode.c",
+              sub: "mode machine",
+              style: "app",
+            },
+            {
+              id: "ui",
+              x: 860,
+              y: 55,
+              label: "ui.c",
+              sub: "LVGL screens",
+              style: "app",
+            },
+            // Service layer
+            {
+              id: "ap",
+              x: 140,
+              y: 230,
+              label: "audio_player",
+              sub: "read + write tasks",
+              style: "svc",
+            },
+            {
+              id: "pl",
+              x: 380,
+              y: 230,
+              label: "playlist",
+              sub: "+ cover_cache",
+              style: "svc",
+            },
+            {
+              id: "wh",
+              x: 640,
+              y: 230,
+              label: "wifi_transfer",
+              sub: "+ http_upload",
+              style: "svc",
+            },
+            // BSP layer
+            {
+              id: "bd",
+              x: 140,
+              y: 410,
+              label: "bsp_display",
+              sub: "ST7789 + LVGL",
+              style: "bsp",
+            },
+            {
+              id: "bs",
+              x: 370,
+              y: 410,
+              label: "bsp_sdcard",
+              sub: "SDSPI + FATFS",
+              style: "bsp",
+            },
+            {
+              id: "ao",
+              x: 600,
+              y: 410,
+              label: "audio_output",
+              sub: "I2S channel",
+              style: "bsp",
+            },
+            {
+              id: "ik",
+              x: 860,
+              y: 410,
+              label: "input_knob",
+              sub: "encoder + button",
+              style: "bsp",
+            },
+            // Hardware
+            {
+              id: "lcd",
+              x: 140,
+              y: 580,
+              label: "ST7789",
+              sub: "240x280",
+              style: "hw",
+            },
+            {
+              id: "sdc",
+              x: 370,
+              y: 580,
+              label: "microSD",
+              sub: "SPI2",
+              style: "hw",
+            },
+            {
+              id: "dac",
+              x: 600,
+              y: 580,
+              label: "I2S DAC",
+              sub: "/ amp",
+              style: "hw",
+            },
+            {
+              id: "enc",
+              x: 860,
+              y: 580,
+              label: "Encoder",
+              sub: "+ switch",
+              style: "hw",
+            },
+          ],
+          e: [
+            { from: "main", to: "appmode" },
+            { from: "main", to: "bd" },
+            { from: "main", to: "bs" },
+            { from: "main", to: "ik" },
+            { from: "appmode", to: "ap" },
+            { from: "appmode", to: "pl" },
+            { from: "appmode", to: "wh" },
+            { from: "ap", to: "ao" },
+            { from: "ap", to: "ui", curve: -40 },
+            { from: "pl", to: "bs" },
+            { from: "pl", to: "ui", curve: -30 },
+            { from: "wh", to: "ui" },
+            { from: "ik", to: "ui", curve: 40 },
+            { from: "ik", to: "appmode", curve: -30 },
+            { from: "ik", to: "ap", curve: -40 },
+            { from: "bd", to: "lcd" },
+            { from: "bs", to: "sdc" },
+            { from: "ao", to: "dac" },
+            { from: "ik", to: "enc" },
+          ],
+        },
+
+        /* ---------- 02 · Boot Sequence ---------- */
+        d2: {
+          w: 900,
+          h: 640,
+          n: [
+            {
+              id: "s1",
+              x: 230,
+              y: 55,
+              w: 400,
+              h: 52,
+              label: "bsp_display_init()",
+              sub: "SPI3 bus + ST7789 + LVGL port",
+              style: "app",
+            },
+            {
+              id: "s2",
+              x: 230,
+              y: 140,
+              w: 400,
+              h: 52,
+              label: "ui_init()",
+              sub: "build player, boot menu, transfer screens",
+              style: "app",
+            },
+            {
+              id: "s3",
+              x: 230,
+              y: 225,
+              w: 400,
+              h: 52,
+              label: 'ui_set_status("Mounting SD card...")',
+              sub: "",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "s4",
+              x: 230,
+              y: 310,
+              w: 400,
+              h: 52,
+              label: "bsp_sdcard_mount()",
+              sub: "SPI2 + esp_vfs_fat_sdspi_mount",
+              style: "bsp",
+            },
+            {
+              id: "s5",
+              x: 230,
+              y: 395,
+              w: 400,
+              h: 52,
+              label: "app_mode_start()",
+              sub: "create queues, spawn app_control_task",
+              style: "svc",
+            },
+            {
+              id: "s6",
+              x: 230,
+              y: 480,
+              w: 400,
+              h: 52,
+              label: "input_knob_init(cfg)",
+              sub: "knob, button, autohide timer, input_control_task",
+              style: "bsp",
+            },
+            {
+              id: "s7",
+              x: 230,
+              y: 565,
+              w: 400,
+              h: 52,
+              label: "ui_show_boot_menu(true)",
+              sub: "app_main returns, scheduler keeps running",
+              style: "app",
+            },
+          ],
+          e: [
+            { from: "s1", to: "s2" },
+            { from: "s2", to: "s3" },
+            { from: "s3", to: "s4" },
+            { from: "s4", to: "s5" },
+            { from: "s5", to: "s6" },
+            { from: "s6", to: "s7" },
+          ],
+        },
+
+        /* ---------- 03 · State Machine ---------- */
+        d3: {
+          w: 780,
+          h: 460,
+          n: [
+            {
+              id: "boot",
+              x: 190,
+              y: 90,
+              w: 220,
+              h: 66,
+              label: "BOOT_MENU",
+              sub: "rotate = toggle, press = OK",
+              style: "hub",
+            },
+            {
+              id: "busy",
+              x: 560,
+              y: 90,
+              w: 220,
+              h: 66,
+              label: "BUSY",
+              sub: "input ignored",
+              style: "hub",
+            },
+            {
+              id: "player",
+              x: 190,
+              y: 350,
+              w: 220,
+              h: 66,
+              label: "PLAYER",
+              sub: "encoder drives playback",
+              style: "hub",
+            },
+            {
+              id: "transfer",
+              x: 560,
+              y: 350,
+              w: 220,
+              h: 66,
+              label: "TRANSFER",
+              sub: "SoftAP + HTTP running",
+              style: "hub",
+            },
+          ],
+          e: [
+            { from: "boot", to: "busy", label: "START_*" },
+            { from: "busy", to: "boot", label: "error", curve: -90 },
+            { from: "busy", to: "player", label: "ready" },
+            { from: "busy", to: "transfer", label: "wifi ready" },
+            { from: "transfer", to: "busy", label: "FINISH", curve: 60 },
+            {
+              from: "busy",
+              to: "player",
+              label: "",
+              curve: 140,
+              color: "#E600B3",
+            },
+          ],
+        },
+
+        /* ---------- 04 · Tasks & Queues ---------- */
+        d4: {
+          w: 1120,
+          h: 560,
+          n: [
+            // Event sources
+            {
+              id: "src_knob",
+              x: 110,
+              y: 50,
+              w: 170,
+              h: 46,
+              label: "iot_knob",
+              sub: "KNOB_LEFT / RIGHT",
+              style: "hw",
+            },
+            {
+              id: "src_btn",
+              x: 300,
+              y: 50,
+              w: 170,
+              h: 46,
+              label: "iot_button",
+              sub: "CLICK / LONG",
+              style: "hw",
+            },
+            {
+              id: "src_tmr",
+              x: 490,
+              y: 50,
+              w: 170,
+              h: 46,
+              label: "esp_timer",
+              sub: "autohide",
+              style: "hw",
+            },
+
+            {
+              id: "ieq",
+              x: 300,
+              y: 145,
+              w: 220,
+              h: 52,
+              label: "input_event_queue",
+              sub: "32 entries",
+              style: "svc",
+            },
+            {
+              id: "ict",
+              x: 300,
+              y: 245,
+              w: 220,
+              h: 52,
+              label: "input_control_task",
+              sub: "prio 6",
+              style: "app",
+            },
+
+            {
+              id: "pcq",
+              x: 110,
+              y: 355,
+              w: 200,
+              h: 52,
+              label: "player_cmd_queue",
+              sub: "8 deep",
+              style: "svc",
+            },
+            {
+              id: "acq",
+              x: 480,
+              y: 355,
+              w: 200,
+              h: 52,
+              label: "app_cmd_queue",
+              sub: "8 deep",
+              style: "svc",
+            },
+
+            {
+              id: "sdr",
+              x: 110,
+              y: 460,
+              w: 200,
+              h: 52,
+              label: "sd_read_task",
+              sub: "prio 6",
+              style: "app",
+            },
+            {
+              id: "act",
+              x: 480,
+              y: 460,
+              w: 200,
+              h: 52,
+              label: "app_control_task",
+              sub: "prio 6",
+              style: "app",
+            },
+
+            {
+              id: "adq",
+              x: 380,
+              y: 460,
+              w: 160,
+              h: 46,
+              label: "audio_data_queue",
+              sub: "6 deep",
+              style: "svc",
+            },
+            {
+              id: "fbq",
+              x: 380,
+              y: 530,
+              w: 160,
+              h: 46,
+              label: "free_buffer_queue",
+              sub: "6 deep",
+              style: "svc",
+            },
+
+            {
+              id: "i2sw",
+              x: 700,
+              y: 500,
+              w: 180,
+              h: 52,
+              label: "i2s_write_task",
+              sub: "prio 5",
+              style: "app",
+            },
+            {
+              id: "dma",
+              x: 920,
+              y: 500,
+              w: 180,
+              h: 52,
+              label: "I2S DMA",
+              sub: "6 descriptors",
+              style: "hw",
+            },
+
+            {
+              id: "uicall",
+              x: 900,
+              y: 245,
+              w: 180,
+              h: 52,
+              label: "ui.c",
+              sub: "lvgl_port_lock",
+              style: "app",
+            },
+            {
+              id: "lvgl",
+              x: 900,
+              y: 350,
+              w: 180,
+              h: 52,
+              label: "LVGL port",
+              sub: "task",
+              style: "app",
+            },
+          ],
+          e: [
+            { from: "src_knob", to: "ieq" },
+            { from: "src_btn", to: "ieq" },
+            { from: "src_tmr", to: "ieq", curve: -20 },
+            { from: "ieq", to: "ict" },
+            { from: "ict", to: "pcq", label: "player_cmd_t" },
+            { from: "ict", to: "acq", label: "app_cmd_t" },
+            { from: "ict", to: "uicall", label: "lock", curve: -40 },
+            { from: "acq", to: "act" },
+            { from: "pcq", to: "sdr" },
+            { from: "sdr", to: "adq", label: "filled" },
+            { from: "sdr", to: "fbq", label: "return", curve: 40 },
+            { from: "adq", to: "i2sw" },
+            { from: "i2sw", to: "dma", label: "write" },
+            { from: "i2sw", to: "fbq", curve: -30 },
+            { from: "uicall", to: "lvgl", color: "#E600B3" },
+          ],
+        },
+
+        /* ---------- 05 · Audio Pipeline ---------- */
+        d5: {
+          w: 1120,
+          h: 360,
+          n: [
+            {
+              id: "a1",
+              x: 90,
+              y: 180,
+              w: 140,
+              h: 58,
+              label: "SD card",
+              sub: ".pcm files",
+              style: "hw",
+            },
+            {
+              id: "a2",
+              x: 270,
+              y: 180,
+              w: 160,
+              h: 58,
+              label: "fread 4 KB",
+              sub: "into free buf",
+              style: "svc",
+            },
+            {
+              id: "a3",
+              x: 460,
+              y: 180,
+              w: 140,
+              h: 58,
+              label: "audio_data_queue",
+              sub: "",
+              style: "svc",
+              fs: 11,
+            },
+            {
+              id: "a4",
+              x: 650,
+              y: 180,
+              w: 160,
+              h: 58,
+              label: "apply_volume",
+              sub: "gain = vol^2",
+              style: "svc",
+            },
+            {
+              id: "a5",
+              x: 840,
+              y: 180,
+              w: 160,
+              h: 58,
+              label: "i2s_channel_write",
+              sub: "",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "a6",
+              x: 1030,
+              y: 180,
+              w: 140,
+              h: 58,
+              label: "I2S DMA",
+              sub: "-> DAC",
+              style: "hw",
+            },
+
+            {
+              id: "sil",
+              x: 270,
+              y: 60,
+              w: 160,
+              h: 46,
+              label: "if paused -> memset 0",
+              sub: "",
+              style: "warn",
+              fs: 10,
+            },
+            {
+              id: "ret",
+              x: 650,
+              y: 60,
+              w: 160,
+              h: 46,
+              label: "free_buffer_queue",
+              sub: "back to reader",
+              style: "svc",
+              fs: 11,
+            },
+          ],
+          e: [
+            { from: "a1", to: "a2" },
+            { from: "a2", to: "a3" },
+            { from: "a3", to: "a4" },
+            { from: "a4", to: "a5" },
+            { from: "a5", to: "a6" },
+            { from: "sil", to: "a3", label: "silence", curve: -30 },
+            { from: "a5", to: "ret", label: "return buffer" },
+            {
+              from: "ret",
+              to: "a2",
+              label: "reuse",
+              curve: -60,
+              color: "#E600B3",
+            },
+          ],
+        },
+
+        /* ---------- 06 · Wi-Fi Transfer ---------- */
+        d6: {
+          w: 900,
+          h: 460,
+          n: [
+            {
+              id: "ph",
+              x: 150,
+              y: 90,
+              w: 200,
+              h: 58,
+              label: "Phone / laptop",
+              sub: "browser",
+              style: "hw",
+            },
+            {
+              id: "ap",
+              x: 480,
+              y: 90,
+              w: 230,
+              h: 58,
+              label: "SoftAP",
+              sub: "ESP-AudioPlayer @ 192.168.4.1",
+              style: "svc",
+              fs: 11,
+            },
+            {
+              id: "md",
+              x: 760,
+              y: 90,
+              w: 230,
+              h: 58,
+              label: "mDNS",
+              sub: "esp-audio.local",
+              style: "svc",
+            },
+
+            {
+              id: "http",
+              x: 480,
+              y: 200,
+              w: 230,
+              h: 58,
+              label: "httpd :80",
+              sub: "stack 8192, 30 s timeout",
+              style: "svc",
+              fs: 11,
+            },
+
+            {
+              id: "r1",
+              x: 90,
+              y: 320,
+              w: 200,
+              h: 58,
+              label: "GET /",
+              sub: "upload.html",
+              style: "app",
+            },
+            {
+              id: "r2",
+              x: 320,
+              y: 320,
+              w: 200,
+              h: 58,
+              label: "GET /status",
+              sub: "free MB + files",
+              style: "app",
+            },
+            {
+              id: "r3",
+              x: 550,
+              y: 320,
+              w: 220,
+              h: 58,
+              label: "POST /upload",
+              sub: "?filename=...",
+              style: "app",
+            },
+
+            {
+              id: "sd",
+              x: 780,
+              y: 320,
+              w: 200,
+              h: 58,
+              label: "FATFS",
+              sub: "/sdcard",
+              style: "hw",
+            },
+            {
+              id: "ui",
+              x: 780,
+              y: 200,
+              w: 200,
+              h: 58,
+              label: "ui.c",
+              sub: "progress screen",
+              style: "app",
+            },
+          ],
+          e: [
+            { from: "ph", to: "ap", label: "http://192.168.4.1" },
+            {
+              from: "ph",
+              to: "md",
+              label: "http://esp-audio.local",
+              curve: -40,
+            },
+            { from: "ap", to: "http" },
+            { from: "http", to: "r1" },
+            { from: "http", to: "r2" },
+            { from: "http", to: "r3" },
+            { from: "r2", to: "sd", curve: 30 },
+            { from: "r3", to: "sd", curve: 20 },
+            { from: "r3", to: "ui", curve: 40, color: "#E600B3" },
+            { from: "r1", to: "ph", color: "#00D5FF", curve: 100 },
+            { from: "r2", to: "ph", color: "#00D5FF", curve: 130 },
+            { from: "r3", to: "ph", color: "#00D5FF", curve: 160 },
+          ],
+        },
+
+        /* ---------- 07 · Cover Art ---------- */
+        d7: {
+          w: 1080,
+          h: 320,
+          n: [
+            {
+              id: "c1",
+              x: 90,
+              y: 160,
+              w: 150,
+              h: 58,
+              label: "playlist_build",
+              sub: "scan /sdcard",
+              style: "svc",
+            },
+            {
+              id: "c2",
+              x: 270,
+              y: 160,
+              w: 150,
+              h: 58,
+              label: "qsort names",
+              sub: "",
+              style: "svc",
+              fs: 12,
+            },
+            {
+              id: "c3",
+              x: 450,
+              y: 160,
+              w: 170,
+              h: 58,
+              label: "preload_covers",
+              sub: "for each track",
+              style: "svc",
+              fs: 11,
+            },
+            {
+              id: "c4",
+              x: 640,
+              y: 160,
+              w: 170,
+              h: 58,
+              label: "load_one(bmp)",
+              sub: "parse header",
+              style: "svc",
+              fs: 11,
+            },
+            {
+              id: "c5",
+              x: 830,
+              y: 160,
+              w: 180,
+              h: 58,
+              label: "RGB565 pack",
+              sub: "heap_caps PSRAM",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "c6",
+              x: 1010,
+              y: 160,
+              w: 140,
+              h: 58,
+              label: "lv_image_set_src",
+              sub: "with transition",
+              style: "app",
+              fs: 10,
+            },
+
+            {
+              id: "fail",
+              x: 640,
+              y: 60,
+              w: 170,
+              h: 46,
+              label: "valid = false",
+              sub: "no cover",
+              style: "warn",
+              fs: 11,
+            },
+          ],
+          e: [
+            { from: "c1", to: "c2" },
+            { from: "c2", to: "c3" },
+            { from: "c3", to: "c4" },
+            { from: "c4", to: "c5", label: "24 or 32 bpp" },
+            { from: "c5", to: "c6" },
+            { from: "c4", to: "fail", label: "invalid" },
+          ],
+        },
+
+        /* ---------- 08 · Input Model ---------- */
+        d8: {
+          w: 1080,
+          h: 480,
+          n: [
+            {
+              id: "rot",
+              x: 130,
+              y: 60,
+              w: 170,
+              h: 50,
+              label: "Rotate CW / CCW",
+              style: "hw",
+            },
+            {
+              id: "prs",
+              x: 330,
+              y: 60,
+              w: 170,
+              h: 50,
+              label: "Short press",
+              style: "hw",
+            },
+            {
+              id: "lng",
+              x: 530,
+              y: 60,
+              w: 170,
+              h: 50,
+              label: "Long press",
+              style: "hw",
+            },
+
+            {
+              id: "mode",
+              x: 330,
+              y: 170,
+              w: 220,
+              h: 58,
+              label: "current app_mode",
+              sub: "dispatch by mode",
+              style: "hub",
+            },
+
+            {
+              id: "bm",
+              x: 100,
+              y: 300,
+              w: 190,
+              h: 66,
+              label: "BOOT_MENU",
+              sub: "rotate toggles, press OK",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "bs",
+              x: 320,
+              y: 300,
+              w: 150,
+              h: 66,
+              label: "BUSY",
+              sub: "ignored",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "tr",
+              x: 510,
+              y: 300,
+              w: 170,
+              h: 66,
+              label: "TRANSFER",
+              sub: "long press = finish",
+              style: "app",
+              fs: 11,
+            },
+            {
+              id: "pl",
+              x: 720,
+              y: 300,
+              w: 170,
+              h: 66,
+              label: "PLAYER",
+              sub: "dispatch by input_ui_mode",
+              style: "app",
+              fs: 11,
+            },
+
+            {
+              id: "tl",
+              x: 950,
+              y: 220,
+              w: 220,
+              h: 66,
+              label: "TRACK mode",
+              sub: "rotate next/prev, click play/pause, long = volume",
+              style: "svc",
+              fs: 10,
+            },
+            {
+              id: "vl",
+              x: 950,
+              y: 380,
+              w: 220,
+              h: 66,
+              label: "VOLUME mode",
+              sub: "rotate +/-1, click mute, long = exit, 3 s autohide",
+              style: "svc",
+              fs: 10,
+            },
+          ],
+          e: [
+            { from: "rot", to: "mode" },
+            { from: "prs", to: "mode" },
+            { from: "lng", to: "mode" },
+            { from: "mode", to: "bm" },
+            { from: "mode", to: "bs" },
+            { from: "mode", to: "tr" },
+            { from: "mode", to: "pl" },
+            { from: "pl", to: "tl", label: "TRACK" },
+            { from: "pl", to: "vl", label: "VOLUME" },
+            {
+              from: "vl",
+              to: "vl",
+              label: "autohide timer",
+              curve: 60,
+              color: "#E600B3",
+            },
+          ],
+        },
+      };
+
+      /* =========================================================================
+       * Render everything
+       * ========================================================================= */
+      (function () {
+        for (var id in DIAGRAMS) {
+          if (DIAGRAMS.hasOwnProperty(id)) {
+            try {
+              renderDiagram(id, DIAGRAMS[id]);
+            } catch (e) {
+              var c = document.getElementById(id);
+              if (c) {
+                c.textContent = "Diagram error: " + e.message;
+              }
+              if (window.console) {
+                console.error("Diagram " + id, e);
+              }
+            }
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -80,6 +80,22 @@ esp_err_t playlist_build(playlist_t *playlist)
     return ESP_OK;
 }
 
+void playlist_free(playlist_t *playlist)
+{
+    if (playlist == NULL)
+    {
+        return;
+    }
+
+    for (int i = 0; i < playlist->count; i++)
+    {
+        cover_cache_free(&playlist->covers[i]);
+    }
+
+    playlist->count = 0;
+    playlist->current_index = 0;
+}
+
 void playlist_preload_covers(playlist_t *playlist)
 {
     int loaded = 0;

@@ -113,6 +113,12 @@ bool cover_cache_load_one(const char *audio_path, cover_entry_t *out)
         return false;
     }
 
+    if (out->pixel_mem)
+    {
+        heap_caps_free(out->pixel_mem);
+        out->pixel_mem = NULL;
+    }
+
     memset(out, 0, sizeof(*out));
 
     char bmp_path[COVER_MAX_PATH];

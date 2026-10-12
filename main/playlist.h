@@ -17,6 +17,7 @@ typedef struct
 } playlist_t;
 
 esp_err_t playlist_build(playlist_t *playlist);
+void playlist_free(playlist_t *playlist);
 void playlist_preload_covers(playlist_t *playlist);
 
 #endif

@@ -46,6 +46,7 @@ static void start_player_mode(bool from_transfer)
         lvgl_port_unlock();
     }
 
+    playlist_free(&s_playlist);
     esp_err_t ret = playlist_build(&s_playlist);
 
     if (ret != ESP_OK)

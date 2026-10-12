@@ -1,0 +1,1429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESP32 Audio Player — Module Architecture</title>
+    <style>
+      :root {
+        --bg: #080b12;
+        --panel: #0e1422;
+        --border: #1b2334;
+        --text: #e6ecf5;
+        --muted: #8d99ad;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background:
+          radial-gradient(1100px 520px at 50% -8%, #14243f 0%, transparent 62%),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        padding: 40px 20px 90px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 1580px;
+        margin: 0 auto;
+      }
+
+      header {
+        text-align: center;
+        margin-bottom: 32px;
+      }
+      header h1 {
+        font-size: clamp(22px, 3.2vw, 34px);
+        margin: 0 0 10px;
+        letter-spacing: -0.02em;
+        background: linear-gradient(
+          90deg,
+          #00d5ff 0%,
+          #8b5cf6 48%,
+          #f43f5e 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      header p {
+        color: var(--muted);
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+        margin: 26px 0 30px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: #c3cddd;
+        background: #0d131f;
+        border: 1px solid #1d2637;
+        border-radius: 999px;
+        padding: 6px 13px;
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+
+      .panel {
+        background: linear-gradient(180deg, #0e1422 0%, #0b101a 100%);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 24px 22px 18px;
+        margin-bottom: 34px;
+        box-shadow:
+          0 30px 70px -40px #000,
+          inset 0 1px 0 #ffffff08;
+      }
+      .panel h2 {
+        margin: 0 0 4px;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .panel h2 .badge {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        padding: 3px 8px;
+        border-radius: 6px;
+        text-transform: uppercase;
+      }
+      .badge.a {
+        background: #f59e0b1f;
+        color: #fbbf24;
+        border: 1px solid #f59e0b44;
+      }
+      .badge.b {
+        background: #06b6d41f;
+        color: #22d3ee;
+        border: 1px solid #06b6d444;
+      }
+      .panel .desc {
+        color: var(--muted);
+        font-size: 13.5px;
+        margin: 0 0 18px;
+      }
+
+      svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      /* ---------- SVG typography ---------- */
+      .ttl {
+        font-size: 13px;
+        font-weight: 650;
+        fill: #e9eefb;
+        text-anchor: middle;
+      }
+      .sub {
+        font-size: 10.5px;
+        fill: #8d99ad;
+        text-anchor: middle;
+      }
+      .lbl {
+        font-size: 9.5px;
+        fill: #7f8ca3;
+        text-anchor: middle;
+      }
+      .lbl-l {
+        font-size: 9.5px;
+        fill: #7f8ca3;
+        text-anchor: start;
+      }
+      .node rect {
+        transition: filter 0.18s ease;
+      }
+      .node:hover rect {
+        filter: brightness(1.55);
+      }
+      .flow {
+        fill: none;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .dash {
+        stroke-dasharray: 5 5;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        margin-top: 6px;
+      }
+      .note {
+        background: #0c1220;
+        border: 1px solid #1a2334;
+        border-left: 3px solid #8b5cf6;
+        border-radius: 10px;
+        padding: 14px 16px;
+        font-size: 13px;
+        color: #aab6c9;
+      }
+      .note b {
+        color: #e6ecf5;
+        display: block;
+        margin-bottom: 4px;
+        font-size: 13.5px;
+      }
+      .note.g {
+        border-left-color: #10b981;
+      }
+      .note.c {
+        border-left-color: #06b6d4;
+      }
+      .note.r {
+        border-left-color: #f43f5e;
+      }
+      .note.a {
+        border-left-color: #f59e0b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>ESP32 Audio Player — Module Architecture</h1>
+        <p>
+          How the firmware modules are wired together, and how data flows at
+          runtime
+        </p>
+      </header>
+
+      <div class="legend">
+        <span class="chip"
+          ><span class="dot" style="background: #f59e0b"></span>Entry
+          point</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #64748b"></span>BSP /
+          driver</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #8b5cf6"></span>App
+          control</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #ec4899"></span>Input</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #10b981"></span>Audio</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #3b82f6"></span>Storage</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #06b6d4"></span>Network</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #f43f5e"></span>UI</span
+        >
+        <span class="chip"
+          ><span class="dot" style="background: #475569"></span>External
+          hardware</span
+        >
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- DIAGRAM A : structure & initialization                        -->
+      <!-- ============================================================ -->
+      <div class="panel">
+        <h2><span class="badge a">A</span> Structure &amp; Initialization</h2>
+        <p class="desc">
+          Who owns whom. Solid arrows are direct calls made during
+          <code>app_main()</code> and the subsequent mode transitions. The
+          dashed arrow is a direct UI call from <code>main.c</code>.
+        </p>
+
+        <svg
+          viewBox="0 0 1400 720"
+          role="img"
+          aria-label="Module structure diagram"
+        >
+          <defs>
+            <marker
+              id="a-amber"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b" />
+            </marker>
+            <marker
+              id="a-slate"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+            </marker>
+            <marker
+              id="a-violet"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#a78bfa" />
+            </marker>
+            <marker
+              id="a-pink"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#f472b6" />
+            </marker>
+            <marker
+              id="a-green"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#34d399" />
+            </marker>
+            <marker
+              id="a-blue"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa" />
+            </marker>
+            <marker
+              id="a-cyan"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#22d3ee" />
+            </marker>
+            <marker
+              id="a-rose"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#fb7185" />
+            </marker>
+          </defs>
+
+          <!-- ===== arrows (drawn first so boxes sit on top) ===== -->
+
+          <!-- main.c trunk -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M790,86 L790,150"
+            marker-end="url(#a-amber)"
+          />
+
+          <!-- main.c -> bsp_display -->
+          <path class="flow" stroke="#64748b" d="M790,110 L125,110" />
+          <path
+            class="flow"
+            stroke="#64748b"
+            d="M125,110 L125,150"
+            marker-end="url(#a-slate)"
+          />
+
+          <!-- main.c -> bsp_sdcard -->
+          <path class="flow" stroke="#64748b" d="M790,126 L315,126" />
+          <path
+            class="flow"
+            stroke="#64748b"
+            d="M315,126 L315,150"
+            marker-end="url(#a-slate)"
+          />
+
+          <!-- main.c -> input_knob -->
+          <path class="flow" stroke="#ec4899" d="M790,142 L1085,142" />
+          <path
+            class="flow"
+            stroke="#ec4899"
+            d="M1085,142 L1085,150"
+            marker-end="url(#a-pink)"
+          />
+
+          <!-- main.c -> ui.c (dashed, routed along the far left) -->
+          <path
+            class="flow dash"
+            stroke="#f43f5e"
+            d="M690,53 L20,53 L20,339 L40,339"
+            marker-end="url(#a-rose)"
+          />
+          <text class="lbl-l" x="34" y="46" fill="#fb7185">
+            ui_show_boot_menu()
+          </text>
+
+          <!-- bsp_display -> ui.c -->
+          <path
+            class="flow"
+            stroke="#f43f5e"
+            d="M125,228 L125,300"
+            marker-end="url(#a-rose)"
+          />
+          <text class="lbl-l" x="136" y="268" fill="#fb7185">ui_init()</text>
+
+          <!-- bsp_sdcard -> SD/FATFS -->
+          <path
+            class="flow"
+            stroke="#64748b"
+            d="M315,228 L315,300"
+            marker-end="url(#a-slate)"
+          />
+
+          <!-- app_mode -> its four services -->
+          <path
+            class="flow"
+            stroke="#8b5cf6"
+            d="M740,228 C740,275 570,286 510,300"
+            marker-end="url(#a-violet)"
+          />
+          <path
+            class="flow"
+            stroke="#8b5cf6"
+            d="M775,228 C775,272 716,288 705,300"
+            marker-end="url(#a-violet)"
+          />
+          <path
+            class="flow"
+            stroke="#8b5cf6"
+            d="M805,228 C805,272 884,288 895,300"
+            marker-end="url(#a-violet)"
+          />
+          <path
+            class="flow"
+            stroke="#8b5cf6"
+            d="M862,228 C862,272 1050,286 1085,300"
+            marker-end="url(#a-violet)"
+          />
+
+          <!-- encoder -> input_knob -->
+          <path
+            class="flow"
+            stroke="#ec4899"
+            d="M1200,189 L1170,189"
+            marker-end="url(#a-pink)"
+          />
+
+          <!-- second level chains -->
+          <path
+            class="flow"
+            stroke="#f43f5e"
+            d="M125,378 L125,450"
+            marker-end="url(#a-rose)"
+          />
+          <path
+            class="flow"
+            stroke="#10b981"
+            d="M510,378 L510,450"
+            marker-end="url(#a-green)"
+          />
+          <path
+            class="flow"
+            stroke="#3b82f6"
+            d="M705,378 L705,450"
+            marker-end="url(#a-blue)"
+          />
+          <path
+            class="flow"
+            stroke="#06b6d4"
+            d="M895,378 L895,450"
+            marker-end="url(#a-cyan)"
+          />
+          <path
+            class="flow"
+            stroke="#06b6d4"
+            d="M1085,378 L1085,450"
+            marker-end="url(#a-cyan)"
+          />
+          <path
+            class="flow"
+            stroke="#10b981"
+            d="M510,528 L510,600"
+            marker-end="url(#a-green)"
+          />
+
+          <!-- ===== boxes ===== -->
+
+          <!-- main.c -->
+          <g class="node">
+            <rect
+              x="690"
+              y="20"
+              width="200"
+              height="66"
+              rx="12"
+              fill="#f59e0b"
+              fill-opacity="0.12"
+              stroke="#f59e0b"
+              stroke-opacity="0.7"
+              stroke-width="1.7"
+            />
+            <text class="ttl" x="790" y="50">main.c</text>
+            <text class="sub" x="790" y="68">app_main() · boot entry</text>
+          </g>
+
+          <!-- bsp_display.c -->
+          <g class="node">
+            <rect
+              x="40"
+              y="150"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#64748b"
+              fill-opacity="0.12"
+              stroke="#64748b"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="125" y="184">bsp_display.c</text>
+            <text class="sub" x="125" y="202">ST7789 + LVGL port</text>
+          </g>
+
+          <!-- bsp_sdcard.c -->
+          <g class="node">
+            <rect
+              x="230"
+              y="150"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#64748b"
+              fill-opacity="0.12"
+              stroke="#64748b"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="315" y="184">bsp_sdcard.c</text>
+            <text class="sub" x="315" y="202">SPI bus + FATFS mount</text>
+          </g>
+
+          <!-- app_mode.c -->
+          <g class="node">
+            <rect
+              x="690"
+              y="150"
+              width="200"
+              height="78"
+              rx="11"
+              fill="#8b5cf6"
+              fill-opacity="0.14"
+              stroke="#8b5cf6"
+              stroke-opacity="0.8"
+              stroke-width="1.9"
+            />
+            <text class="ttl" x="790" y="184">app_mode.c</text>
+            <text class="sub" x="790" y="202">mode state machine + queues</text>
+          </g>
+
+          <!-- input_knob.c -->
+          <g class="node">
+            <rect
+              x="1000"
+              y="150"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#ec4899"
+              fill-opacity="0.12"
+              stroke="#ec4899"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="1085" y="184">input_knob.c</text>
+            <text class="sub" x="1085" y="202">encoder + button task</text>
+          </g>
+
+          <!-- encoder hardware -->
+          <g class="node">
+            <rect
+              x="1200"
+              y="150"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+              stroke-dasharray="4 3"
+            />
+            <text class="ttl" x="1285" y="184">Encoder + Button</text>
+            <text class="sub" x="1285" y="202">GPIO 16 / 17 / 18</text>
+          </g>
+
+          <!-- ui.c -->
+          <g class="node">
+            <rect
+              x="40"
+              y="300"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#f43f5e"
+              fill-opacity="0.12"
+              stroke="#f43f5e"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="125" y="334">ui.c</text>
+            <text class="sub" x="125" y="352">LVGL screens &amp; widgets</text>
+          </g>
+
+          <!-- SD / FATFS -->
+          <g class="node">
+            <rect
+              x="230"
+              y="300"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#3b82f6"
+              fill-opacity="0.12"
+              stroke="#3b82f6"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="315" y="334">SD Card / FATFS</text>
+            <text class="sub" x="315" y="352">/sdcard volume</text>
+          </g>
+
+          <!-- audio_player.c -->
+          <g class="node">
+            <rect
+              x="420"
+              y="300"
+              width="180"
+              height="78"
+              rx="11"
+              fill="#10b981"
+              fill-opacity="0.13"
+              stroke="#10b981"
+              stroke-opacity="0.75"
+              stroke-width="1.8"
+            />
+            <text class="ttl" x="510" y="334">audio_player.c</text>
+            <text class="sub" x="510" y="352">SD read + I2S write tasks</text>
+          </g>
+
+          <!-- playlist.c -->
+          <g class="node">
+            <rect
+              x="620"
+              y="300"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#3b82f6"
+              fill-opacity="0.12"
+              stroke="#3b82f6"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="705" y="334">playlist.c</text>
+            <text class="sub" x="705" y="352">scan .pcm + preload covers</text>
+          </g>
+
+          <!-- wifi_transfer.c -->
+          <g class="node">
+            <rect
+              x="810"
+              y="300"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#06b6d4"
+              fill-opacity="0.12"
+              stroke="#06b6d4"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="895" y="334">wifi_transfer.c</text>
+            <text class="sub" x="895" y="352">SoftAP + mDNS</text>
+          </g>
+
+          <!-- http_upload.c -->
+          <g class="node">
+            <rect
+              x="1000"
+              y="300"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#06b6d4"
+              fill-opacity="0.12"
+              stroke="#06b6d4"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="1085" y="334">http_upload.c</text>
+            <text class="sub" x="1085" y="352">HTTP server + upload</text>
+          </g>
+
+          <!-- LVGL / ST7789 -->
+          <g class="node">
+            <rect
+              x="40"
+              y="450"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="125" y="484">LVGL / ST7789</text>
+            <text class="sub" x="125" y="502">240 × 280 SPI panel</text>
+          </g>
+
+          <!-- audio_output.c -->
+          <g class="node">
+            <rect
+              x="420"
+              y="450"
+              width="180"
+              height="78"
+              rx="11"
+              fill="#10b981"
+              fill-opacity="0.13"
+              stroke="#10b981"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="510" y="484">audio_output.c</text>
+            <text class="sub" x="510" y="502">I2S std-mode init</text>
+          </g>
+
+          <!-- cover_cache.c -->
+          <g class="node">
+            <rect
+              x="620"
+              y="450"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#3b82f6"
+              fill-opacity="0.12"
+              stroke="#3b82f6"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="705" y="484">cover_cache.c</text>
+            <text class="sub" x="705" y="502">BMP → RGB565 in PSRAM</text>
+          </g>
+
+          <!-- Wi-Fi stack -->
+          <g class="node">
+            <rect
+              x="810"
+              y="450"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="895" y="484">Wi-Fi / netif / mDNS</text>
+            <text class="sub" x="895" y="502">ESP-IDF stack</text>
+          </g>
+
+          <!-- httpd -->
+          <g class="node">
+            <rect
+              x="1000"
+              y="450"
+              width="170"
+              height="78"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="1085" y="484">esp_http_server</text>
+            <text class="sub" x="1085" y="502">upload.html embedded</text>
+          </g>
+
+          <!-- I2S DAC -->
+          <g class="node">
+            <rect
+              x="420"
+              y="600"
+              width="180"
+              height="70"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="510" y="630">I2S DAC / Amplifier</text>
+            <text class="sub" x="510" y="648">BCLK 38 · WS 40 · DOUT 39</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- DIAGRAM B : runtime flow                                      -->
+      <!-- ============================================================ -->
+      <div class="panel">
+        <h2>
+          <span class="badge b">B</span> Runtime Data Flow — Tasks, Queues &amp;
+          Services
+        </h2>
+        <p class="desc">
+          What actually happens once the device is running. Amber nodes are
+          FreeRTOS queues, green nodes are audio tasks, and the wide rose band
+          at the bottom is the shared LVGL UI that every task posts to.
+        </p>
+
+        <svg
+          viewBox="0 0 1500 900"
+          role="img"
+          aria-label="Runtime data flow diagram"
+        >
+          <defs>
+            <marker
+              id="b-pink"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#f472b6" />
+            </marker>
+            <marker
+              id="b-amber"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#fbbf24" />
+            </marker>
+            <marker
+              id="b-green"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#34d399" />
+            </marker>
+            <marker
+              id="b-violet"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#a78bfa" />
+            </marker>
+            <marker
+              id="b-blue"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#60a5fa" />
+            </marker>
+            <marker
+              id="b-cyan"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#22d3ee" />
+            </marker>
+            <marker
+              id="b-rose"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M0,0 L10,5 L0,10 z" fill="#fb7185" />
+            </marker>
+          </defs>
+
+          <!-- ============ ARROWS ============ -->
+
+          <!-- encoder -> input_ctrl -->
+          <path
+            class="flow"
+            stroke="#ec4899"
+            d="M200,75 L250,75"
+            marker-end="url(#b-pink)"
+          />
+
+          <!-- input_ctrl -> player_cmd_queue -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M440,56 L490,56"
+            marker-end="url(#b-amber)"
+          />
+
+          <!-- input_ctrl -> app_cmd_queue -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M440,92 L465,92 L465,138 L490,138"
+            marker-end="url(#b-amber)"
+          />
+
+          <!-- player_cmd_queue -> sd_read_task -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M670,56 L700,56 L700,240 L350,240 L350,270"
+            marker-end="url(#b-amber)"
+          />
+          <text class="lbl-l" x="470" y="232" fill="#fbbf24">
+            NEXT / PREV / TOGGLE_PLAY
+          </text>
+
+          <!-- app_cmd_queue -> app_control_task -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M670,138 L730,138"
+            marker-end="url(#b-amber)"
+          />
+          <text class="lbl-l" x="676" y="131" fill="#fbbf24">app_cmd_t</text>
+
+          <!-- audio pipeline -->
+          <path
+            class="flow"
+            stroke="#3b82f6"
+            d="M200,320 L250,320"
+            marker-end="url(#b-blue)"
+          />
+          <path
+            class="flow"
+            stroke="#10b981"
+            d="M450,320 L500,320"
+            marker-end="url(#b-green)"
+          />
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M680,320 L730,320"
+            marker-end="url(#b-amber)"
+          />
+          <path
+            class="flow"
+            stroke="#10b981"
+            d="M930,320 L980,320"
+            marker-end="url(#b-green)"
+          />
+
+          <text class="lbl-l" x="455" y="313" fill="#34d399">PCM</text>
+          <text class="lbl-l" x="682" y="313" fill="#fbbf24">PCM</text>
+          <text class="lbl-l" x="933" y="313" fill="#34d399">DMA</text>
+
+          <!-- i2s_write_task -> free_buffer_queue -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M830,370 L830,460 L680,460"
+            marker-end="url(#b-amber)"
+          />
+          <text class="lbl-l" x="700" y="453" fill="#fbbf24">
+            recycle buffer
+          </text>
+
+          <!-- free_buffer_queue -> sd_read_task -->
+          <path
+            class="flow"
+            stroke="#f59e0b"
+            d="M500,460 L400,460 L400,370"
+            marker-end="url(#b-amber)"
+          />
+
+          <!-- app_control_task -> wifi_transfer -->
+          <path
+            class="flow"
+            stroke="#06b6d4"
+            d="M950,110 L1130,110 L1130,170 L1180,170"
+            marker-end="url(#b-cyan)"
+          />
+          <text class="lbl-l" x="1060" y="103" fill="#22d3ee">
+            wifi_transfer_start()
+          </text>
+
+          <!-- app_control_task -> http_upload -->
+          <path
+            class="flow"
+            stroke="#06b6d4"
+            d="M950,150 L1100,150 L1100,280 L1180,280"
+            marker-end="url(#b-cyan)"
+          />
+          <text class="lbl-l" x="1005" y="143" fill="#22d3ee">
+            http_upload_server_start()
+          </text>
+
+          <!-- browser -> wifi -> http_upload -->
+          <path
+            class="flow"
+            stroke="#64748b"
+            d="M1290,100 L1290,130"
+            marker-end="url(#b-cyan)"
+          />
+          <path
+            class="flow"
+            stroke="#06b6d4"
+            d="M1290,210 L1290,240"
+            marker-end="url(#b-cyan)"
+          />
+
+          <!-- everything -> UI band -->
+          <path
+            class="flow dash"
+            stroke="#f43f5e"
+            d="M225,90 L225,640"
+            marker-end="url(#b-rose)"
+          />
+          <path
+            class="flow dash"
+            stroke="#f43f5e"
+            d="M350,370 L350,640"
+            marker-end="url(#b-rose)"
+          />
+          <path
+            class="flow dash"
+            stroke="#f43f5e"
+            d="M930,170 L930,220 L1160,220 L1160,640"
+            marker-end="url(#b-rose)"
+          />
+          <path
+            class="flow dash"
+            stroke="#f43f5e"
+            d="M1290,320 L1290,640"
+            marker-end="url(#b-rose)"
+          />
+
+          <text class="lbl-l" x="232" y="500" fill="#fb7185">
+            volume / playback
+          </text>
+          <text class="lbl-l" x="357" y="500" fill="#fb7185">
+            track started / elapsed
+          </text>
+          <text class="lbl-l" x="1167" y="500" fill="#fb7185">
+            screens / status
+          </text>
+          <text class="lbl-l" x="1297" y="500" fill="#fb7185">
+            upload progress
+          </text>
+
+          <!-- ============ BOXES ============ -->
+
+          <!-- Encoder + Button -->
+          <g class="node">
+            <rect
+              x="30"
+              y="40"
+              width="170"
+              height="70"
+              rx="11"
+              fill="#ec4899"
+              fill-opacity="0.12"
+              stroke="#ec4899"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="115" y="70">Encoder + Button</text>
+            <text class="sub" x="115" y="88">GPIO 16 / 17 / 18</text>
+          </g>
+
+          <!-- input_ctrl task -->
+          <g class="node">
+            <rect
+              x="250"
+              y="40"
+              width="190"
+              height="70"
+              rx="11"
+              fill="#ec4899"
+              fill-opacity="0.12"
+              stroke="#ec4899"
+              stroke-opacity="0.75"
+              stroke-width="1.7"
+            />
+            <text class="ttl" x="345" y="70">input_ctrl task</text>
+            <text class="sub" x="345" y="88">debounce · long-press guard</text>
+          </g>
+
+          <!-- player_cmd_queue -->
+          <g class="node">
+            <rect
+              x="490"
+              y="28"
+              width="180"
+              height="56"
+              rx="28"
+              fill="#f59e0b"
+              fill-opacity="0.13"
+              stroke="#f59e0b"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="580" y="52">player_cmd_queue</text>
+            <text class="sub" x="580" y="68">depth 8</text>
+          </g>
+
+          <!-- app_cmd_queue -->
+          <g class="node">
+            <rect
+              x="490"
+              y="110"
+              width="180"
+              height="56"
+              rx="28"
+              fill="#f59e0b"
+              fill-opacity="0.13"
+              stroke="#f59e0b"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="580" y="134">app_cmd_queue</text>
+            <text class="sub" x="580" y="150">depth 8</text>
+          </g>
+
+          <!-- app_control_task -->
+          <g class="node">
+            <rect
+              x="730"
+              y="80"
+              width="220"
+              height="90"
+              rx="11"
+              fill="#8b5cf6"
+              fill-opacity="0.14"
+              stroke="#8b5cf6"
+              stroke-opacity="0.8"
+              stroke-width="1.9"
+            />
+            <text class="ttl" x="840" y="115">app_control_task</text>
+            <text class="sub" x="840" y="133">
+              app_mode.c · mode state machine
+            </text>
+            <text class="sub" x="840" y="149">
+              BOOT_MENU → BUSY → PLAYER / TRANSFER
+            </text>
+          </g>
+
+          <!-- SD card -->
+          <g class="node">
+            <rect
+              x="30"
+              y="280"
+              width="170"
+              height="80"
+              rx="11"
+              fill="#3b82f6"
+              fill-opacity="0.12"
+              stroke="#3b82f6"
+              stroke-opacity="0.7"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="115" y="313">SD Card (FATFS)</text>
+            <text class="sub" x="115" y="331">.pcm + .bmp files</text>
+          </g>
+
+          <!-- sd_read_task -->
+          <g class="node">
+            <rect
+              x="250"
+              y="270"
+              width="200"
+              height="100"
+              rx="11"
+              fill="#10b981"
+              fill-opacity="0.13"
+              stroke="#10b981"
+              stroke-opacity="0.8"
+              stroke-width="1.8"
+            />
+            <text class="ttl" x="350" y="303">sd_read_task</text>
+            <text class="sub" x="350" y="321">fopen / fread on /sdcard</text>
+            <text class="sub" x="350" y="338">handles NEXT / PREV / PAUSE</text>
+          </g>
+
+          <!-- audio_data_queue -->
+          <g class="node">
+            <rect
+              x="500"
+              y="290"
+              width="180"
+              height="60"
+              rx="30"
+              fill="#f59e0b"
+              fill-opacity="0.13"
+              stroke="#f59e0b"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="590" y="315">audio_data_queue</text>
+            <text class="sub" x="590" y="332">6 × 4096 B buffers</text>
+          </g>
+
+          <!-- i2s_write_task -->
+          <g class="node">
+            <rect
+              x="730"
+              y="270"
+              width="200"
+              height="100"
+              rx="11"
+              fill="#10b981"
+              fill-opacity="0.13"
+              stroke="#10b981"
+              stroke-opacity="0.8"
+              stroke-width="1.8"
+            />
+            <text class="ttl" x="830" y="303">i2s_write_task</text>
+            <text class="sub" x="830" y="321">applies volume / mute gain</text>
+            <text class="sub" x="830" y="338">i2s_channel_write()</text>
+          </g>
+
+          <!-- I2S DAC -->
+          <g class="node">
+            <rect
+              x="980"
+              y="280"
+              width="180"
+              height="80"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="1070" y="313">I2S DMA → DAC</text>
+            <text class="sub" x="1070" y="331">44.1 kHz · 16-bit stereo</text>
+          </g>
+
+          <!-- free_buffer_queue -->
+          <g class="node">
+            <rect
+              x="500"
+              y="430"
+              width="180"
+              height="60"
+              rx="30"
+              fill="#f59e0b"
+              fill-opacity="0.13"
+              stroke="#f59e0b"
+              stroke-opacity="0.75"
+              stroke-width="1.6"
+            />
+            <text class="ttl" x="590" y="455">free_buffer_queue</text>
+            <text class="sub" x="590" y="472">DMA-capable pool</text>
+          </g>
+
+          <!-- Browser -->
+          <g class="node">
+            <rect
+              x="1180"
+              y="30"
+              width="220"
+              height="70"
+              rx="11"
+              fill="#475569"
+              fill-opacity="0.14"
+              stroke="#475569"
+              stroke-opacity="0.8"
+              stroke-width="1.6"
+              stroke-dasharray="4 3"
+            />
+            <text class="ttl" x="1290" y="60">📱 Browser / Phone</text>
+            <text class="sub" x="1290" y="78">http://192.168.4.1</text>
+          </g>
+
+          <!-- wifi_transfer.c -->
+          <g class="node">
+            <rect
+              x="1180"
+              y="130"
+              width="220"
+              height="80"
+              rx="11"
+              fill="#06b6d4"
+              fill-opacity="0.12"
+              stroke="#06b6d4"
+              stroke-opacity="0.75"
+              stroke-width="1.7"
+            />
+            <text class="ttl" x="1290" y="163">wifi_transfer.c</text>
+            <text class="sub" x="1290" y="181">
+              SoftAP ESP-AudioPlayer + mDNS
+            </text>
+          </g>
+
+          <!-- http_upload.c -->
+          <g class="node">
+            <rect
+              x="1180"
+              y="240"
+              width="220"
+              height="80"
+              rx="11"
+              fill="#06b6d4"
+              fill-opacity="0.12"
+              stroke="#06b6d4"
+              stroke-opacity="0.75"
+              stroke-width="1.7"
+            />
+            <text class="ttl" x="1290" y="273">http_upload.c</text>
+            <text class="sub" x="1290" y="291">
+              httpd task · / · /upload · /status
+            </text>
+          </g>
+
+          <!-- UI BAND -->
+          <g class="node">
+            <rect
+              x="30"
+              y="640"
+              width="1440"
+              height="90"
+              rx="16"
+              fill="#f43f5e"
+              fill-opacity="0.10"
+              stroke="#f43f5e"
+              stroke-opacity="0.75"
+              stroke-width="1.9"
+            />
+            <text class="ttl" x="750" y="676" style="font-size: 15px">
+              ui.c — shared LVGL screen API
+            </text>
+            <text class="sub" x="750" y="697" style="font-size: 11.5px">
+              every call is wrapped in lvgl_port_lock() / lvgl_port_unlock() ·
+              ui_notify_track_started · ui_update_elapsed · ui_update_volume ·
+              ui_show_transfer_screen · ui_set_status
+            </text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- ============================================================ -->
+      <!-- NOTES                                                         -->
+      <!-- ============================================================ -->
+      <div class="panel">
+        <h2><span class="badge b">ⓘ</span> Reading the diagrams</h2>
+        <div class="notes">
+          <div class="note a">
+            <b>Two hubs</b>
+            <code>app_mode.c</code> owns the mode state machine and orchestrates
+            every service, while <code>ui.c</code> is the shared presentation
+            sink that almost every module writes to.
+          </div>
+          <div class="note g">
+            <b>Audio is a two-task pipeline</b>
+            <code>sd_read_task</code> never touches I2S;
+            <code>i2s_write_task</code> never touches the SD card. They hand off
+            through <code>audio_data_queue</code> and recycle buffers via
+            <code>free_buffer_queue</code>.
+          </div>
+          <div class="note c">
+            <b>Transfer mode is fully torn down</b>
+            When leaving Upload mode, <code>wifi_transfer_stop()</code> deinits
+            the Wi-Fi driver and mDNS so the memory goes back to the audio path
+            and cover-art PSRAM.
+          </div>
+          <div class="note r">
+            <b>UI calls are the weak seam</b>
+            Four different tasks call into <code>ui.c</code> directly and block
+            on the LVGL mutex. Moving these to a UI event queue would decouple
+            the diagram considerably.
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
