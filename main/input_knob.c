@@ -2,7 +2,7 @@
 #include "input_knob.h"
 
 #include "app_config.h"
-#include "audio_player.h"
+#include "app_types.h"
 #include "ui.h"
 #include "app_controller.h"
 
@@ -29,8 +29,6 @@ typedef enum
 /* --------------------------------------------------------------------------
  * Internal state
  * -------------------------------------------------------------------------- */
-static input_knob_config_t s_cfg;
-
 static QueueHandle_t s_input_event_queue = NULL;
 static esp_timer_handle_t s_volume_autohide_timer = NULL;
 
@@ -62,21 +60,6 @@ static void post_input_event(input_event_t evt)
     {
         xQueueSend(s_input_event_queue, &evt, 0);
     }
-}
-
-static void send_player_cmd(player_cmd_t cmd)
-{
-    if (s_cfg.player_cmd_queue == NULL)
-    {
-        return;
-    }
-
-    /*
-     * Use zero timeout so the input task never blocks.
-     * If the queue is full, dropping one encoder command is usually
-     * preferable to blocking the UI/input task.
-     */
-    xQueueSend(s_cfg.player_cmd_queue, &cmd, 0);
 }
 
 static void post_app_cmd(app_cmd_t cmd)
@@ -174,7 +157,8 @@ static void input_control_task(void *arg)
         }
 
         /*
-         * Ignore short presses emitted immediately after a long press.
+         * Some button drivers emit a short press shortly after
+         * releasing a long press.
          */
         if (evt == INPUT_EVT_SHORT_PRESS &&
             (now - last_long_press_us) < LONG_PRESS_GUARD_US)
@@ -182,13 +166,11 @@ static void input_control_task(void *arg)
             continue;
         }
 
-        /*
-         * Read one mode snapshot for this event.
-         * Only the application controller changes application mode.
-         */
         app_mode_t mode = app_controller_get_mode();
 
-        /* Boot menu, transfer mode, and busy state. */
+        /* ------------------------------------------------------------ */
+        /* Boot menu, transfer mode, and busy state                       */
+        /* ------------------------------------------------------------ */
         if (mode != APP_MODE_PLAYER)
         {
             if (mode == APP_MODE_BOOT_MENU)
@@ -228,17 +210,17 @@ static void input_control_task(void *arg)
             {
             case INPUT_EVT_ROTATE_CW:
                 ESP_LOGI(TAG, "Encoder: next track");
-                send_player_cmd(PLAYER_CMD_NEXT);
+                post_app_cmd(APP_CMD_NEXT_TRACK);
                 break;
 
             case INPUT_EVT_ROTATE_CCW:
                 ESP_LOGI(TAG, "Encoder: previous track");
-                send_player_cmd(PLAYER_CMD_PREV);
+                post_app_cmd(APP_CMD_PREVIOUS_TRACK);
                 break;
 
             case INPUT_EVT_SHORT_PRESS:
                 ESP_LOGI(TAG, "Encoder: play/pause");
-                send_player_cmd(PLAYER_CMD_TOGGLE_PLAY);
+                post_app_cmd(APP_CMD_TOGGLE_PLAYBACK);
                 break;
 
             case INPUT_EVT_LONG_PRESS:
@@ -253,7 +235,7 @@ static void input_control_task(void *arg)
         /* ------------------------------------------------------------ */
         /* Player: volume controls                                       */
         /* ------------------------------------------------------------ */
-        else /* INPUT_UI_MODE_VOLUME */
+        else
         {
             switch (evt)
             {
@@ -338,15 +320,8 @@ static void knob_long_press_cb(void *knob_handle, void *user_data)
 /* --------------------------------------------------------------------------
  * Public API
  * -------------------------------------------------------------------------- */
-esp_err_t input_knob_init(const input_knob_config_t *cfg)
+esp_err_t input_knob_init(void)
 {
-    if (cfg == NULL || cfg->player_cmd_queue == NULL)
-    {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    s_cfg = *cfg;
-
     s_input_event_queue = xQueueCreate(32, sizeof(input_event_t));
 
     if (s_input_event_queue == NULL)

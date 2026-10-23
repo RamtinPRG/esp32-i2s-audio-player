@@ -29,11 +29,7 @@ void app_main(void)
     ESP_ERROR_CHECK(app_controller_start());
 
     /* Initialize encoder/input state machine */
-    input_knob_config_t input_cfg = {
-        .player_cmd_queue = app_controller_get_player_cmd_queue(),
-    };
-
-    ESP_ERROR_CHECK(input_knob_init(&input_cfg));
+    ESP_ERROR_CHECK(input_knob_init());
 
     ESP_LOGI(TAG, "Boot menu active");
 }

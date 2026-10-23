@@ -117,6 +117,59 @@ static bool handle_volume_command(app_cmd_t cmd, app_mode_t mode)
 
     return true;
 }
+
+/*
+ * Returns true if cmd is a playback command, including commands
+ * deliberately ignored outside player mode.
+ */
+static bool handle_playback_command(app_cmd_t cmd, app_mode_t mode)
+{
+    player_cmd_t player_cmd;
+
+    switch (cmd)
+    {
+    case APP_CMD_NEXT_TRACK:
+        player_cmd = PLAYER_CMD_NEXT;
+        break;
+
+    case APP_CMD_PREVIOUS_TRACK:
+        player_cmd = PLAYER_CMD_PREV;
+        break;
+
+    case APP_CMD_TOGGLE_PLAYBACK:
+        player_cmd = PLAYER_CMD_TOGGLE_PLAY;
+        break;
+
+    default:
+        return false;
+    }
+
+    if (mode != APP_MODE_PLAYER)
+    {
+        ESP_LOGW(
+            TAG,
+            "Ignoring playback command %d in mode %d",
+            (int)cmd,
+            (int)mode);
+        return true;
+    }
+
+    if (s_player_cmd_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Player command queue is unavailable");
+        return true;
+    }
+
+    if (xQueueSend(s_player_cmd_queue, &player_cmd, 0) != pdTRUE)
+    {
+        ESP_LOGW(
+            TAG,
+            "Player command queue full; dropped command %d",
+            (int)player_cmd);
+    }
+
+    return true;
+}
 /* --------------------------------------------------------------------------
  * Mode transitions
  * -------------------------------------------------------------------------- */
@@ -350,6 +403,11 @@ static void app_control_task(void *arg)
             continue;
         }
 
+        if (handle_playback_command(cmd, mode))
+        {
+            continue;
+        }
+
         switch (cmd)
         {
         case APP_CMD_TOGGLE_BOOT_SELECTION:
@@ -458,11 +516,6 @@ esp_err_t app_controller_start(void)
     return ESP_OK;
 }
 
-QueueHandle_t app_controller_get_player_cmd_queue(void)
-{
-    return s_player_cmd_queue;
-}
-
 app_mode_t app_controller_get_mode(void)
 {
     return (app_mode_t)atomic_load(&s_app_mode);
@@ -480,6 +533,9 @@ esp_err_t app_controller_submit(app_cmd_t cmd)
     case APP_CMD_VOLUME_UP:
     case APP_CMD_VOLUME_DOWN:
     case APP_CMD_TOGGLE_MUTE:
+    case APP_CMD_NEXT_TRACK:
+    case APP_CMD_PREVIOUS_TRACK:
+    case APP_CMD_TOGGLE_PLAYBACK:
         break;
 
     default:
