@@ -4,6 +4,7 @@
 #include "app_config.h"
 #include "audio_player.h"
 #include "ui.h"
+#include "app_controller.h"
 
 #include <stdint.h>
 
@@ -80,25 +81,15 @@ static void send_player_cmd(player_cmd_t cmd)
 
 static void post_app_cmd(app_cmd_t cmd)
 {
-    if (s_cfg.app_cmd_queue == NULL)
-    {
-        return;
-    }
+    esp_err_t ret = app_mode_submit(cmd);
 
-    if (xPortInIsrContext() == pdTRUE)
+    if (ret != ESP_OK)
     {
-        BaseType_t higher_woken = pdFALSE;
-
-        xQueueSendFromISR(s_cfg.app_cmd_queue, &cmd, &higher_woken);
-
-        if (higher_woken)
-        {
-            portYIELD_FROM_ISR();
-        }
-    }
-    else
-    {
-        xQueueSend(s_cfg.app_cmd_queue, &cmd, 0);
+        ESP_LOGW(
+            TAG,
+            "Failed to submit app command %d: %s",
+            (int)cmd,
+            esp_err_to_name(ret));
     }
 }
 
@@ -229,9 +220,7 @@ static void input_control_task(void *arg)
         }
 
         /*
-         * Some knob/button stacks can emit a short-press event after a long
-         * press release. Ignore short presses that occur immediately after a
-         * long press.
+         * Ignore short presses emitted immediately after a long press.
          */
         if (evt == INPUT_EVT_SHORT_PRESS &&
             (now - last_long_press_us) < LONG_PRESS_GUARD_US)
@@ -239,12 +228,18 @@ static void input_control_task(void *arg)
             continue;
         }
 
+        /*
+         * Read one mode snapshot for this event.
+         * Only the application controller changes application mode.
+         */
+        app_mode_t mode = app_mode_get();
+
         /* ------------------------------------------------------------ */
-        /* Top-level application mode handling                          */
+        /* Boot menu, transfer mode, and busy state                       */
         /* ------------------------------------------------------------ */
-        if (*s_cfg.app_mode != APP_MODE_PLAYER)
+        if (mode != APP_MODE_PLAYER)
         {
-            if (*s_cfg.app_mode == APP_MODE_BOOT_MENU)
+            if (mode == APP_MODE_BOOT_MENU)
             {
                 switch (evt)
                 {
@@ -263,8 +258,6 @@ static void input_control_task(void *arg)
                     break;
 
                 case INPUT_EVT_SHORT_PRESS:
-                    *s_cfg.app_mode = APP_MODE_BUSY;
-
                     if (*s_cfg.boot_option == BOOT_OPT_PLAYER)
                     {
                         post_app_cmd(APP_CMD_START_PLAYER);
@@ -279,28 +272,21 @@ static void input_control_task(void *arg)
                     break;
                 }
             }
-            else if (*s_cfg.app_mode == APP_MODE_TRANSFER)
+            else if (mode == APP_MODE_TRANSFER)
             {
-                /*
-                 * In transfer mode:
-                 * long press means "done, go to player".
-                 */
+                /* Long press finishes transfer and starts the player. */
                 if (evt == INPUT_EVT_LONG_PRESS)
                 {
-                    *s_cfg.app_mode = APP_MODE_BUSY;
                     post_app_cmd(APP_CMD_FINISH_TRANSFER);
                 }
             }
 
-            /*
-             * APP_MODE_BUSY ignores all input.
-             * Also ignore rotation/short press in transfer mode.
-             */
+            /* Ignore all input while busy. */
             continue;
         }
 
         /* ------------------------------------------------------------ */
-        /* Player mode                                                  */
+        /* Player: track controls                                        */
         /* ------------------------------------------------------------ */
         if (s_ui_mode == INPUT_UI_MODE_TRACK)
         {
@@ -330,7 +316,10 @@ static void input_control_task(void *arg)
                 break;
             }
         }
-        else /* INPUT_UI_MODE_VOLUME */
+        /* ------------------------------------------------------------ */
+        /* Player: volume controls                                       */
+        /* ------------------------------------------------------------ */
+        else
         {
             switch (evt)
             {
@@ -349,11 +338,6 @@ static void input_control_task(void *arg)
             case INPUT_EVT_SHORT_PRESS:
                 ESP_LOGI(TAG, "Encoder: mute/unmute");
                 toggle_mute();
-
-                /*
-                 * If you want auto-hide to reset only on rotation,
-                 * remove this call.
-                 */
                 volume_activity();
                 break;
 
@@ -364,8 +348,8 @@ static void input_control_task(void *arg)
 
             case INPUT_EVT_AUTO_HIDE_VOLUME:
                 /*
-                 * Guard against stale timer events: only exit if there
-                 * really has been no recent volume activity.
+                 * Ignore stale timer events if there has been more
+                 * recent volume activity.
                  */
                 if ((now - s_last_volume_activity_us) >= VOLUME_AUTO_HIDE_US)
                 {
@@ -428,8 +412,6 @@ esp_err_t input_knob_init(const input_knob_config_t *cfg)
 {
     if (cfg == NULL ||
         cfg->player_cmd_queue == NULL ||
-        cfg->app_cmd_queue == NULL ||
-        cfg->app_mode == NULL ||
         cfg->boot_option == NULL ||
         cfg->volume == NULL ||
         cfg->mute == NULL)

@@ -1,5 +1,6 @@
 /* main/app_mode.c */
-#include "app_mode.h"
+#include <stdatomic.h>
+#include "app_controller.h"
 
 #include "app_config.h"
 #include "audio_player.h"
@@ -21,7 +22,8 @@ static const char *TAG = "APP_MODE";
 static QueueHandle_t s_player_cmd_queue = NULL;
 static QueueHandle_t s_app_cmd_queue = NULL;
 
-static volatile app_mode_t s_app_mode = APP_MODE_BOOT_MENU;
+static atomic_int s_app_mode = ATOMIC_VAR_INIT(APP_MODE_BOOT_MENU);
+
 static boot_option_t s_boot_option = BOOT_OPT_PLAYER;
 
 static volatile uint8_t s_volume = 100;
@@ -29,6 +31,10 @@ static volatile bool s_mute = false;
 
 static playlist_t s_playlist;
 
+static void set_mode(app_mode_t mode)
+{
+    atomic_store(&s_app_mode, (int)mode);
+}
 /* --------------------------------------------------------------------------
  * Mode transitions
  * -------------------------------------------------------------------------- */
@@ -36,7 +42,7 @@ static void start_player_mode(bool from_transfer)
 {
     (void)from_transfer;
 
-    s_app_mode = APP_MODE_BUSY;
+    set_mode(APP_MODE_BUSY);
 
     if (lvgl_port_lock(500))
     {
@@ -68,7 +74,7 @@ static void start_player_mode(bool from_transfer)
             lvgl_port_unlock();
         }
 
-        s_app_mode = APP_MODE_BOOT_MENU;
+        set_mode(APP_MODE_BOOT_MENU);
         return;
     }
 
@@ -107,18 +113,18 @@ static void start_player_mode(bool from_transfer)
             lvgl_port_unlock();
         }
 
-        s_app_mode = APP_MODE_BOOT_MENU;
+        set_mode(APP_MODE_BOOT_MENU);
         return;
     }
 
     audio_player_set_volume(s_volume, s_mute);
 
-    s_app_mode = APP_MODE_PLAYER;
+    set_mode(APP_MODE_PLAYER);
 }
 
 static void enter_transfer_from_boot_menu(void)
 {
-    s_app_mode = APP_MODE_BUSY;
+    set_mode(APP_MODE_BUSY);
 
     audio_player_set_playback(false);
 
@@ -159,7 +165,7 @@ static void enter_transfer_from_boot_menu(void)
             lvgl_port_unlock();
         }
 
-        s_app_mode = APP_MODE_BOOT_MENU;
+        set_mode(APP_MODE_BOOT_MENU);
         return;
     }
 
@@ -186,7 +192,7 @@ static void enter_transfer_from_boot_menu(void)
             lvgl_port_unlock();
         }
 
-        s_app_mode = APP_MODE_BOOT_MENU;
+        set_mode(APP_MODE_BOOT_MENU);
         return;
     }
 
@@ -196,12 +202,12 @@ static void enter_transfer_from_boot_menu(void)
         lvgl_port_unlock();
     }
 
-    s_app_mode = APP_MODE_TRANSFER;
+    set_mode(APP_MODE_TRANSFER);
 }
 
 static void finish_transfer_and_enter_player(void)
 {
-    s_app_mode = APP_MODE_BUSY;
+    set_mode(APP_MODE_BUSY);
 
     if (lvgl_port_lock(500))
     {
@@ -269,7 +275,7 @@ static void app_control_task(void *arg)
 /* --------------------------------------------------------------------------
  * Public API
  * -------------------------------------------------------------------------- */
-esp_err_t app_mode_start(void)
+esp_err_t app_controller_start(void)
 {
     s_player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
     s_app_cmd_queue = xQueueCreate(8, sizeof(app_cmd_t));
@@ -293,32 +299,50 @@ esp_err_t app_mode_start(void)
     return ESP_OK;
 }
 
-QueueHandle_t app_mode_get_player_cmd_queue(void)
+QueueHandle_t app_controller_get_player_cmd_queue(void)
 {
     return s_player_cmd_queue;
 }
 
-QueueHandle_t app_mode_get_app_cmd_queue(void)
+app_mode_t app_mode_get(void)
 {
-    return s_app_cmd_queue;
+    return (app_mode_t)atomic_load(&s_app_mode);
 }
 
-volatile app_mode_t *app_mode_get_mode_ptr(void)
+esp_err_t app_mode_submit(app_cmd_t cmd)
 {
-    return &s_app_mode;
+    switch (cmd)
+    {
+    case APP_CMD_START_PLAYER:
+    case APP_CMD_START_TRANSFER:
+    case APP_CMD_FINISH_TRANSFER:
+        break;
+
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_app_cmd_queue == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return xQueueSend(s_app_cmd_queue, &cmd, 0) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
 }
 
-boot_option_t *app_mode_get_boot_option_ptr(void)
+boot_option_t *app_controller_get_boot_option_ptr(void)
 {
     return &s_boot_option;
 }
 
-volatile uint8_t *app_mode_get_volume_ptr(void)
+volatile uint8_t *app_controller_get_volume_ptr(void)
 {
     return &s_volume;
 }
 
-volatile bool *app_mode_get_mute_ptr(void)
+volatile bool *app_controller_get_mute_ptr(void)
 {
     return &s_mute;
 }

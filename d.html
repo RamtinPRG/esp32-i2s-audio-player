@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESP Audio Player — Refactored Architecture</title>
+    <style>
+      :root {
+        --bg: #0b0d12;
+        --panel: #121620;
+        --panel-2: #161b28;
+        --border: #263143;
+        --text: #f2f6ff;
+        --muted: #8a93a6;
+        --accent: #00d5ff;
+        --accent-2: #e600b3;
+        --warn: #ffb454;
+        --good: #4ade80;
+        --layer-app: #00d5ff;
+        --layer-service: #a78bfa;
+        --layer-ui: #f472b6;
+        --layer-bsp: #fbbf24;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      header {
+        padding: 32px 24px 12px;
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      header h1 {
+        margin: 0 0 6px;
+        font-size: 26px;
+        letter-spacing: -0.01em;
+      }
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      main {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 16px 24px 80px;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px;
+        margin-bottom: 22px;
+      }
+      section h2 {
+        margin: 0 0 4px;
+        font-size: 17px;
+        letter-spacing: 0.01em;
+      }
+      section h2 .num {
+        display: inline-block;
+        width: 24px;
+        height: 24px;
+        line-height: 24px;
+        text-align: center;
+        border-radius: 6px;
+        background: var(--accent);
+        color: #001018;
+        font-size: 12px;
+        font-weight: 700;
+        margin-right: 10px;
+        vertical-align: middle;
+      }
+      section .sub {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 0 0 16px;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-bottom: 14px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .legend .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .legend .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+      }
+      .dot-app {
+        background: var(--layer-app);
+      }
+      .dot-service {
+        background: var(--layer-service);
+      }
+      .dot-ui {
+        background: var(--layer-ui);
+      }
+      .dot-bsp {
+        background: var(--layer-bsp);
+      }
+
+      /* ---------- Layer diagram ---------- */
+      .layers {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .layer {
+        position: relative;
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin: 0;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+      }
+      .layer + .layer {
+        margin-top: 28px;
+      }
+      .layer + .layer::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: -28px;
+        width: 2px;
+        height: 28px;
+        background: linear-gradient(180deg, transparent, var(--border));
+        transform: translateX(-1px);
+      }
+      .layer + .layer::after {
+        content: "▲▼";
+        position: absolute;
+        left: 50%;
+        top: -20px;
+        transform: translate(-50%, 0);
+        font-size: 10px;
+        color: var(--muted);
+        background: var(--bg);
+        padding: 0 4px;
+        letter-spacing: 2px;
+      }
+      .layer-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .layer-title .name {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .layer-title .note {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .layer-app .layer-title .name {
+        color: var(--layer-app);
+      }
+      .layer-service .layer-title .name {
+        color: var(--layer-service);
+      }
+      .layer-ui .layer-title .name {
+        color: var(--layer-ui);
+      }
+      .layer-bsp .layer-title .name {
+        color: var(--layer-bsp);
+      }
+
+      .layer-app {
+        border-left: 3px solid var(--layer-app);
+      }
+      .layer-service {
+        border-left: 3px solid var(--layer-service);
+      }
+      .layer-ui {
+        border-left: 3px solid var(--layer-ui);
+      }
+      .layer-bsp {
+        border-left: 3px solid var(--layer-bsp);
+      }
+
+      .boxes {
+        display: grid;
+        gap: 10px;
+      }
+      .boxes.cols-3 {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .boxes.cols-4 {
+        grid-template-columns: repeat(4, 1fr);
+      }
+      .boxes.cols-5 {
+        grid-template-columns: repeat(5, 1fr);
+      }
+      .boxes.cols-6 {
+        grid-template-columns: repeat(6, 1fr);
+      }
+      @media (max-width: 900px) {
+        .boxes.cols-3,
+        .boxes.cols-4,
+        .boxes.cols-5,
+        .boxes.cols-6 {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      .box {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .box .title {
+        font-weight: 700;
+        font-size: 13px;
+        margin-bottom: 4px;
+        color: var(--text);
+      }
+      .box .desc {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .box.accent-app {
+        border-color: rgba(0, 213, 255, 0.45);
+        box-shadow: 0 0 0 1px rgba(0, 213, 255, 0.08) inset;
+      }
+      .box.accent-service {
+        border-color: rgba(167, 139, 250, 0.45);
+      }
+      .box.accent-ui {
+        border-color: rgba(244, 114, 182, 0.45);
+      }
+      .box.accent-bsp {
+        border-color: rgba(251, 191, 36, 0.45);
+      }
+
+      /* ---------- Dataflow ---------- */
+      .flow {
+        background: #0a0c11;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        overflow-x: auto;
+      }
+      .flow + .flow {
+        margin-top: 12px;
+      }
+      .flow-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .steps {
+        display: flex;
+        align-items: stretch;
+        gap: 0;
+        min-width: max-content;
+      }
+      .step {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 12px;
+        min-width: 150px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        position: relative;
+      }
+      .step .actor {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        margin-bottom: 3px;
+      }
+      .step .what {
+        font-weight: 600;
+        color: var(--text);
+        font-size: 12px;
+        line-height: 1.3;
+      }
+      .step .payload {
+        font-size: 10px;
+        color: var(--accent);
+        margin-top: 3px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .arrow {
+        display: flex;
+        align-items: center;
+        padding: 0 6px;
+        color: var(--muted);
+        font-size: 14px;
+        flex: 0 0 auto;
+      }
+      .actor-app {
+        border-left: 3px solid var(--layer-app);
+      }
+      .actor-service {
+        border-left: 3px solid var(--layer-service);
+      }
+      .actor-ui {
+        border-left: 3px solid var(--layer-ui);
+      }
+      .actor-bsp {
+        border-left: 3px solid var(--layer-bsp);
+      }
+      .actor-input {
+        border-left: 3px solid var(--good);
+      }
+
+      /* ---------- Rules ---------- */
+      .rules {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+        gap: 10px;
+      }
+      .rule {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .rule .n {
+        display: inline-block;
+        font-weight: 700;
+        color: var(--accent);
+        margin-right: 6px;
+      }
+
+      footer {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+        padding: 24px;
+      }
+      code {
+        background: #0a0c11;
+        border: 1px solid var(--border);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--accent);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>ESP Audio Player — Refactored Architecture</h1>
+      <p>
+        Event-driven, layered, single-owner state. Every cross-module
+        interaction is an event on the bus.
+      </p>
+    </header>
+
+    <main>
+      <!-- =========================================================== -->
+      <!-- 1. LAYERED ARCHITECTURE                                     -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">1</span>Layered Architecture</h2>
+        <p class="sub">
+          Arrows between layers show dependency direction. Services never call
+          each other; UI never calls services.
+        </p>
+
+        <div class="legend">
+          <span class="chip"
+            ><span class="dot dot-app"></span> app / orchestration</span
+          >
+          <span class="chip"
+            ><span class="dot dot-service"></span> services (feature
+            owners)</span
+          >
+          <span class="chip"
+            ><span class="dot dot-ui"></span> ui (passive views)</span
+          >
+          <span class="chip"
+            ><span class="dot dot-bsp"></span> bsp (hardware wrappers)</span
+          >
+        </div>
+
+        <div class="layers">
+          <!-- APP -->
+          <div class="layer layer-app">
+            <div class="layer-title">
+              <span class="name">App Layer</span>
+              <span class="note"
+                >orchestration only — owns mode transitions</span
+              >
+            </div>
+            <div class="boxes cols-3">
+              <div class="box accent-app">
+                <div class="title">app_core</div>
+                <div class="desc">
+                  FSM task. Handles boot → player → transfer transitions. Only
+                  module that changes mode.
+                </div>
+              </div>
+              <div class="box accent-app">
+                <div class="title">app_events</div>
+                <div class="desc">
+                  Central pub/sub bus. Typed events, value payloads, no
+                  pointers.
+                </div>
+              </div>
+              <div class="box accent-app">
+                <div class="title">app_state</div>
+                <div class="desc">
+                  Single owner of mode, boot selection, volume, mute. Snapshot
+                  API.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SERVICES -->
+          <div class="layer layer-service">
+            <div class="layer-title">
+              <span class="name">Service Layer</span>
+              <span class="note"
+                >feature owners — publish events, subscribe to events, never
+                call each other</span
+              >
+            </div>
+            <div class="boxes cols-5">
+              <div class="box accent-service">
+                <div class="title">input_service</div>
+                <div class="desc">
+                  Knob + button edges → <code>EVT_INPUT_*</code>.
+                </div>
+              </div>
+              <div class="box accent-service">
+                <div class="title">playlist_service</div>
+                <div class="desc">
+                  SD scan, cursor, next/prev. No audio knowledge.
+                </div>
+              </div>
+              <div class="box accent-service">
+                <div class="title">audio_service</div>
+                <div class="desc">
+                  SD → I2S pipeline. Owns PCM read task and DMA writer.
+                </div>
+              </div>
+              <div class="box accent-service">
+                <div class="title">cover_service</div>
+                <div class="desc">
+                  Lazy BMP decode, small LRU, prefetch next track.
+                </div>
+              </div>
+              <div class="box accent-service">
+                <div class="title">transfer_service</div>
+                <div class="desc">
+                  Wi-Fi AP + HTTP upload + mDNS. Publishes upload progress.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- UI -->
+          <div class="layer layer-ui">
+            <div class="layer-title">
+              <span class="name">UI Layer</span>
+              <span class="note"
+                >passive views — render state, never mutate app state</span
+              >
+            </div>
+            <div class="boxes cols-6">
+              <div class="box accent-ui">
+                <div class="title">ui_router</div>
+                <div class="desc">Show / hide screens.</div>
+              </div>
+              <div class="box accent-ui">
+                <div class="title">ui_boot_screen</div>
+                <div class="desc">Player / Upload menu.</div>
+              </div>
+              <div class="box accent-ui">
+                <div class="title">ui_player_screen</div>
+                <div class="desc">Cover, title, elapsed, EQ bars.</div>
+              </div>
+              <div class="box accent-ui">
+                <div class="title">ui_transfer_screen</div>
+                <div class="desc">SSID, URL, progress bar.</div>
+              </div>
+              <div class="box accent-ui">
+                <div class="title">ui_volume_overlay</div>
+                <div class="desc">Volume bar + mute icon.</div>
+              </div>
+              <div class="box accent-ui">
+                <div class="title">ui_theme</div>
+                <div class="desc">Colors, fonts, sizes.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- BSP -->
+          <div class="layer layer-bsp">
+            <div class="layer-title">
+              <span class="name">BSP Layer</span>
+              <span class="note">thin hardware wrappers — no logic</span>
+            </div>
+            <div class="boxes cols-3">
+              <div class="box accent-bsp">
+                <div class="title">bsp_display</div>
+                <div class="desc">ST7789 + LVGL port init.</div>
+              </div>
+              <div class="box accent-bsp">
+                <div class="title">bsp_sdcard</div>
+                <div class="desc">SPI bus + FATFS mount.</div>
+              </div>
+              <div class="box accent-bsp">
+                <div class="title">bsp_audio_out</div>
+                <div class="desc">I2S TX channel init.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 2. DATAFLOW: TRACK CHANGE                                   -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">2</span>Dataflow — Rotate Knob → Next Track</h2>
+        <p class="sub">
+          Physical edge becomes an input event. App core translates it into a
+          player command. UI and cover service react to the audio event.
+        </p>
+
+        <div class="flow">
+          <div class="flow-title">CW rotation in Track mode</div>
+          <div class="steps">
+            <div class="step actor-input">
+              <div class="actor">input_service</div>
+              <div class="what">Encoder edge detected</div>
+              <div class="payload">publish EVT_INPUT_ROTATE_CW</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_core</div>
+              <div class="what">In PLAYER + sub-mode TRACK</div>
+              <div class="payload">PLAYER_CMD_NEXT → audio q</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">audio_service</div>
+              <div class="what">Flush buffers, open next file</div>
+              <div class="payload">publish EVT_AUDIO_TRACK_STARTED</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-ui">
+              <div class="actor">ui_player_screen</div>
+              <div class="what">Update title, duration, EQ</div>
+              <div class="payload">lvgl_port_lock()</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">cover_service</div>
+              <div class="what">On EVT_AUDIO_TRACK_STARTED, load BMP</div>
+              <div class="payload">publish EVT_COVER_READY</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-ui">
+              <div class="actor">ui_player_screen</div>
+              <div class="what">Slide-in new cover</div>
+              <div class="payload">lvgl_port_lock()</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 3. DATAFLOW: VOLUME                                         -->
+      <!-- =========================================================== -->
+      <section>
+        <h2>
+          <span class="num">3</span>Dataflow — Rotate Knob → Volume Change
+        </h2>
+        <p class="sub">
+          Volume state lives in <code>app_state</code>. Audio gain and UI both
+          react to the same state change event.
+        </p>
+
+        <div class="flow">
+          <div class="flow-title">CW rotation in Volume sub-mode</div>
+          <div class="steps">
+            <div class="step actor-input">
+              <div class="actor">input_service</div>
+              <div class="what">Encoder edge detected</div>
+              <div class="payload">publish EVT_INPUT_ROTATE_CW</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_core</div>
+              <div class="what">In PLAYER + sub-mode VOLUME</div>
+              <div class="payload">app_state_set_volume(v+1)</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_state</div>
+              <div class="what">Mutex-protected write</div>
+              <div class="payload">publish EVT_VOLUME_CHANGED</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">audio_service</div>
+              <div class="what">Update cached Q16 gain</div>
+              <div class="payload">applies to next buffer</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-ui">
+              <div class="actor">ui_volume_overlay</div>
+              <div class="what">Animate bar, update %</div>
+              <div class="payload">lvgl_port_lock()</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow" style="margin-top: 12px">
+          <div class="flow-title">Auto-hide after 3 s</div>
+          <div class="steps">
+            <div class="step actor-input">
+              <div class="actor">input_service</div>
+              <div class="what">Timer expires</div>
+              <div class="payload">publish EVT_INPUT_VOLUME_TIMEOUT</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_core</div>
+              <div class="what">Exit volume sub-mode</div>
+              <div class="payload">ui_router: hide overlay</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 4. DATAFLOW: MODE TRANSITION                                -->
+      <!-- =========================================================== -->
+      <section>
+        <h2>
+          <span class="num">4</span>Dataflow — Transfer → Player Transition
+        </h2>
+        <p class="sub">
+          Blocking work happens in a transition worker. The FSM stays responsive
+          and receives <code>EVT_MODE_CHANGED</code> when done.
+        </p>
+
+        <div class="flow">
+          <div class="flow-title">
+            Long-press encoder while on transfer screen
+          </div>
+          <div class="steps">
+            <div class="step actor-input">
+              <div class="actor">input_service</div>
+              <div class="what">Long press edge</div>
+              <div class="payload">EVT_INPUT_LONG_PRESS</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_core</div>
+              <div class="what">In ST_TRANSFER, request exit</div>
+              <div class="payload">state → ST_TRANSITION</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">transfer_service</div>
+              <div class="what">Stop HTTP, Wi-Fi, mDNS, netif</div>
+              <div class="payload">blocking OK (worker)</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">playlist_service</div>
+              <div class="what">Rescan SD for .pcm files</div>
+              <div class="payload">publish EVT_PLAYLIST_READY</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">audio_service</div>
+              <div class="what">Start pipeline on track 0</div>
+              <div class="payload">publish EVT_AUDIO_TRACK_STARTED</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-app">
+              <div class="actor">app_core</div>
+              <div class="what">Transition complete</div>
+              <div class="payload">publish EVT_MODE_CHANGED(PLAYER)</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-ui">
+              <div class="actor">ui_router</div>
+              <div class="what">Show player screen</div>
+              <div class="payload">lvgl_port_lock()</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 5. DATAFLOW: HTTP UPLOAD                                    -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">5</span>Dataflow — HTTP Upload Progress</h2>
+        <p class="sub">
+          The HTTP handler never touches LVGL. It publishes progress; the
+          transfer screen subscribes.
+        </p>
+
+        <div class="flow">
+          <div class="flow-title">Browser uploads a .pcm file</div>
+          <div class="steps">
+            <div class="step actor-service">
+              <div class="actor">http_upload</div>
+              <div class="what">Recv chunk, fwrite to /sdcard</div>
+              <div class="payload">every 64 KB</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-service">
+              <div class="actor">transfer_service</div>
+              <div class="what">Throttle + publish</div>
+              <div class="payload">EVT_TRANSFER_UPLOAD_PROGRESS</div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="step actor-ui">
+              <div class="actor">ui_transfer_screen</div>
+              <div class="what">Update bar + percent label</div>
+              <div class="payload">lvgl_port_lock()</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 6. HARD OWNERSHIP RULES                                     -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">6</span>Hard Ownership Rules</h2>
+        <p class="sub">
+          These constraints are what keep the architecture from rotting back
+          into a ball of mud.
+        </p>
+        <div class="rules">
+          <div class="rule">
+            <span class="n">1</span>Only <code>bsp_*</code> touches hardware
+            pins and registers.
+          </div>
+          <div class="rule">
+            <span class="n">2</span>Only <code>ui_*</code> calls
+            <code>lvgl_port_lock</code> and LVGL APIs.
+          </div>
+          <div class="rule">
+            <span class="n">3</span>Only <code>app_state</code> owns mutable
+            app-level state.
+          </div>
+          <div class="rule">
+            <span class="n">4</span>Only <code>app_core</code> performs mode
+            transitions.
+          </div>
+          <div class="rule">
+            <span class="n">5</span>Only <code>audio_service</code> writes to
+            I2S and reads PCM from SD.
+          </div>
+          <div class="rule">
+            <span class="n">6</span><code>services/*</code> never
+            <code>#include "ui.h"</code>.
+          </div>
+          <div class="rule">
+            <span class="n">7</span><code>ui/*</code> never includes any service
+            header.
+          </div>
+          <div class="rule">
+            <span class="n">8</span>Cross-module = events only. Direct calls
+            only for <code>app_core → service_start/stop</code>.
+          </div>
+          <div class="rule">
+            <span class="n">9</span>Event payloads are value types. No pointers
+            into caller memory.
+          </div>
+          <div class="rule">
+            <span class="n">10</span>Blocking init (SD, Wi-Fi) runs in a
+            transition worker, never in the FSM task.
+          </div>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 7. FOLDER LAYOUT                                            -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">7</span>Folder Layout</h2>
+        <p class="sub">
+          Mirrors the layers. Any file in <code>services/</code> can be tested
+          without LVGL or hardware.
+        </p>
+        <div
+          class="flow"
+          style="
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre;
+            color: var(--text);
+          "
+        >
+          main/ ├── main.c
+          <span style="color: var(--muted)"
+            >— composition root: init order only</span
+          >
+          ├── app/ │ ├── app_core.c / .h
+          <span style="color: var(--layer-app)"
+            >— FSM task, mode transitions</span
+          >
+          │ ├── app_events.c / .h
+          <span style="color: var(--layer-app)">— pub/sub bus</span> │ └──
+          app_state.c / .h
+          <span style="color: var(--layer-app)"
+            >— mode, volume, mute, selection</span
+          >
+          ├── services/ │ ├── input_service.c / .h
+          <span style="color: var(--layer-service)"
+            >— knob + button → events</span
+          >
+          │ ├── playlist_service.c / .h
+          <span style="color: var(--layer-service)">— SD scan, cursor</span> │
+          ├── audio_service.c / .h
+          <span style="color: var(--layer-service)">— SD → I2S pipeline</span> │
+          ├── cover_service.c / .h
+          <span style="color: var(--layer-service)">— lazy BMP + LRU</span> │
+          └── transfer_service.c/.h
+          <span style="color: var(--layer-service)">— Wi-Fi + HTTP + mDNS</span>
+          ├── ui/ │ ├── ui_router.c / .h
+          <span style="color: var(--layer-ui)">— screen show/hide</span> │ ├──
+          ui_boot_screen.c / .h
+          <span style="color: var(--layer-ui)">— Player / Upload menu</span> │
+          ├── ui_player_screen.c/.h
+          <span style="color: var(--layer-ui)">— cover, title, EQ</span> │ ├──
+          ui_transfer_screen.c/.h
+          <span style="color: var(--layer-ui)">— SSID, URL, progress</span> │
+          ├── ui_volume_overlay.c/.h
+          <span style="color: var(--layer-ui)">— volume bar</span> │ └──
+          ui_theme.c / .h
+          <span style="color: var(--layer-ui)">— colors, fonts, sizes</span> ├──
+          bsp/ │ ├── bsp_display.c / .h
+          <span style="color: var(--layer-bsp)">— ST7789 + LVGL port</span> │
+          ├── bsp_sdcard.c / .h
+          <span style="color: var(--layer-bsp)">— SPI + FATFS mount</span> │ └──
+          bsp_audio_out.c / .h
+          <span style="color: var(--layer-bsp)">— I2S TX channel</span> └──
+          config/ ├── app_config.h
+          <span style="color: var(--muted)">— pins, buffer sizes</span> ├──
+          ui_config.h
+          <span style="color: var(--muted)">— theme, layout constants</span> └──
+          event_config.h
+          <span style="color: var(--muted)">— queue depths, timeouts</span>
+        </div>
+      </section>
+
+      <!-- =========================================================== -->
+      <!-- 8. MIGRATION PLAN                                           -->
+      <!-- =========================================================== -->
+      <section>
+        <h2><span class="num">8</span>Incremental Migration Plan</h2>
+        <p class="sub">
+          Each phase compiles and runs. Stop at any phase — even 1–3 removes
+          most of the coupling.
+        </p>
+        <div class="rules">
+          <div class="rule">
+            <span class="n">P1</span>Add <code>app_state</code>. Move volume,
+            mute, mode, selection. Delete <code>app_mode_get_*_ptr()</code>.
+          </div>
+          <div class="rule">
+            <span class="n">P2</span>Add <code>app_events</code>.
+            <code>input_service</code> publishes only. Mode logic moves to
+            <code>app_core</code>.
+          </div>
+          <div class="rule">
+            <span class="n">P3</span>UI subscribes to events. Remove
+            <code>ui_*</code> calls from audio, http, input.
+          </div>
+          <div class="rule">
+            <span class="n">P4</span>Split modules into <code>services/</code>.
+            Rename to service naming.
+          </div>
+          <div class="rule">
+            <span class="n">P5</span>Split <code>ui.c</code> into per-screen
+            files + router + theme.
+          </div>
+          <div class="rule">
+            <span class="n">P6</span>Lazy cover loading via
+            <code>cover_service</code> LRU + prefetch next.
+          </div>
+          <div class="rule">
+            <span class="n">P7</span>Move blocking transitions into a transition
+            worker task.
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>ESP Audio Player — refactored architecture &amp; dataflow</footer>
+  </body>
+</html>

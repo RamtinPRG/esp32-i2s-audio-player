@@ -12,9 +12,6 @@
 typedef struct
 {
     QueueHandle_t player_cmd_queue;
-    QueueHandle_t app_cmd_queue;
-
-    volatile app_mode_t *app_mode;
     boot_option_t *boot_option;
 
     volatile uint8_t *volume;

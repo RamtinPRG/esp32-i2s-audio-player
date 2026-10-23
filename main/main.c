@@ -1,6 +1,6 @@
 /* main/main.c */
 
-#include "app_mode.h"
+#include "app_controller.h"
 #include "bsp_display.h"
 #include "bsp_sdcard.h"
 #include "input_knob.h"
@@ -26,16 +26,14 @@ void app_main(void)
     ESP_ERROR_CHECK(bsp_sdcard_mount());
 
     /* Start application mode control */
-    ESP_ERROR_CHECK(app_mode_start());
+    ESP_ERROR_CHECK(app_controller_start());
 
     /* Initialize encoder/input state machine */
     input_knob_config_t input_cfg = {
-        .player_cmd_queue = app_mode_get_player_cmd_queue(),
-        .app_cmd_queue = app_mode_get_app_cmd_queue(),
-        .app_mode = app_mode_get_mode_ptr(),
-        .boot_option = app_mode_get_boot_option_ptr(),
-        .volume = app_mode_get_volume_ptr(),
-        .mute = app_mode_get_mute_ptr(),
+        .player_cmd_queue = app_controller_get_player_cmd_queue(),
+        .boot_option = app_controller_get_boot_option_ptr(),
+        .volume = app_controller_get_volume_ptr(),
+        .mute = app_controller_get_mute_ptr(),
     };
 
     ESP_ERROR_CHECK(input_knob_init(&input_cfg));
@@ -44,7 +42,7 @@ void app_main(void)
     if (lvgl_port_lock(500))
     {
         ui_show_boot_menu(true);
-        ui_set_boot_selection(*app_mode_get_boot_option_ptr());
+        ui_set_boot_selection(*app_controller_get_boot_option_ptr());
         lvgl_port_unlock();
     }
 
