@@ -3,14 +3,12 @@
 
 #include "app_config.h"
 #include "app_types.h"
-#include "ui.h"
 #include "app_controller.h"
 
 #include <stdint.h>
 
 #include "button_gpio.h"
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -20,20 +18,10 @@
 
 static const char *TAG = "INPUT_KNOB";
 
-typedef enum
-{
-    INPUT_UI_MODE_TRACK = 0,
-    INPUT_UI_MODE_VOLUME,
-} input_ui_mode_t;
-
 /* --------------------------------------------------------------------------
  * Internal state
  * -------------------------------------------------------------------------- */
 static QueueHandle_t s_input_event_queue = NULL;
-static esp_timer_handle_t s_volume_autohide_timer = NULL;
-
-static input_ui_mode_t s_ui_mode = INPUT_UI_MODE_TRACK;
-static int64_t s_last_volume_activity_us = 0;
 
 /* --------------------------------------------------------------------------
  * Internal helpers
@@ -62,76 +50,6 @@ static void post_input_event(input_event_t evt)
     }
 }
 
-static void post_app_cmd(app_cmd_t cmd)
-{
-    esp_err_t ret = app_controller_submit(cmd);
-
-    if (ret != ESP_OK)
-    {
-        ESP_LOGW(
-            TAG,
-            "Failed to submit app command %d: %s",
-            (int)cmd,
-            esp_err_to_name(ret));
-    }
-}
-
-static void volume_autohide_timer_cb(void *arg)
-{
-    (void)arg;
-
-    post_input_event(INPUT_EVT_AUTO_HIDE_VOLUME);
-}
-
-static void volume_activity(void)
-{
-    s_last_volume_activity_us = esp_timer_get_time();
-
-    if (s_volume_autohide_timer != NULL)
-    {
-        esp_timer_stop(s_volume_autohide_timer);
-        esp_timer_start_once(s_volume_autohide_timer, VOLUME_AUTO_HIDE_US);
-    }
-}
-
-static void enter_volume_mode(void)
-{
-    s_ui_mode = INPUT_UI_MODE_VOLUME;
-
-    /*
-     * The controller initializes and updates the displayed
-     * volume and mute values. Input only shows the overlay.
-     */
-    if (lvgl_port_lock(500))
-    {
-        ui_show_volume_mode(true);
-        lvgl_port_unlock();
-    }
-
-    volume_activity();
-}
-
-static void exit_volume_mode(void)
-{
-    if (s_ui_mode != INPUT_UI_MODE_VOLUME)
-    {
-        return;
-    }
-
-    s_ui_mode = INPUT_UI_MODE_TRACK;
-
-    if (s_volume_autohide_timer != NULL)
-    {
-        esp_timer_stop(s_volume_autohide_timer);
-    }
-
-    if (lvgl_port_lock(500))
-    {
-        ui_show_volume_mode(false);
-        lvgl_port_unlock();
-    }
-}
-
 /* --------------------------------------------------------------------------
  * Input control task
  * -------------------------------------------------------------------------- */
@@ -139,140 +57,46 @@ static void input_control_task(void *arg)
 {
     (void)arg;
 
-    input_event_t evt;
+    input_event_t event;
     int64_t last_long_press_us = 0;
 
     while (1)
     {
-        if (xQueueReceive(s_input_event_queue, &evt, portMAX_DELAY) != pdTRUE)
+        if (xQueueReceive(
+                s_input_event_queue,
+                &event,
+                portMAX_DELAY) != pdTRUE)
         {
             continue;
         }
 
         int64_t now = esp_timer_get_time();
 
-        if (evt == INPUT_EVT_LONG_PRESS)
+        if (event == INPUT_EVT_LONG_PRESS)
         {
             last_long_press_us = now;
         }
 
         /*
-         * Some button drivers emit a short press shortly after
-         * releasing a long press.
+         * Suppress the short press some button drivers emit
+         * immediately after a long press.
          */
-        if (evt == INPUT_EVT_SHORT_PRESS &&
+        if (event == INPUT_EVT_SHORT_PRESS &&
+            last_long_press_us != 0 &&
             (now - last_long_press_us) < LONG_PRESS_GUARD_US)
         {
             continue;
         }
 
-        app_mode_t mode = app_controller_get_mode();
+        esp_err_t ret = app_controller_post_input(event);
 
-        /* ------------------------------------------------------------ */
-        /* Boot menu, transfer mode, and busy state                       */
-        /* ------------------------------------------------------------ */
-        if (mode != APP_MODE_PLAYER)
+        if (ret != ESP_OK)
         {
-            if (mode == APP_MODE_BOOT_MENU)
-            {
-                switch (evt)
-                {
-                case INPUT_EVT_ROTATE_CW:
-                case INPUT_EVT_ROTATE_CCW:
-                    post_app_cmd(APP_CMD_TOGGLE_BOOT_SELECTION);
-                    break;
-
-                case INPUT_EVT_SHORT_PRESS:
-                    post_app_cmd(APP_CMD_CONFIRM_BOOT_SELECTION);
-                    break;
-
-                default:
-                    break;
-                }
-            }
-            else if (mode == APP_MODE_TRANSFER)
-            {
-                if (evt == INPUT_EVT_LONG_PRESS)
-                {
-                    post_app_cmd(APP_CMD_FINISH_TRANSFER);
-                }
-            }
-
-            continue;
-        }
-
-        /* ------------------------------------------------------------ */
-        /* Player: track controls                                        */
-        /* ------------------------------------------------------------ */
-        if (s_ui_mode == INPUT_UI_MODE_TRACK)
-        {
-            switch (evt)
-            {
-            case INPUT_EVT_ROTATE_CW:
-                ESP_LOGI(TAG, "Encoder: next track");
-                post_app_cmd(APP_CMD_NEXT_TRACK);
-                break;
-
-            case INPUT_EVT_ROTATE_CCW:
-                ESP_LOGI(TAG, "Encoder: previous track");
-                post_app_cmd(APP_CMD_PREVIOUS_TRACK);
-                break;
-
-            case INPUT_EVT_SHORT_PRESS:
-                ESP_LOGI(TAG, "Encoder: play/pause");
-                post_app_cmd(APP_CMD_TOGGLE_PLAYBACK);
-                break;
-
-            case INPUT_EVT_LONG_PRESS:
-                ESP_LOGI(TAG, "Encoder: enter volume mode");
-                enter_volume_mode();
-                break;
-
-            default:
-                break;
-            }
-        }
-        /* ------------------------------------------------------------ */
-        /* Player: volume controls                                       */
-        /* ------------------------------------------------------------ */
-        else
-        {
-            switch (evt)
-            {
-            case INPUT_EVT_ROTATE_CW:
-                ESP_LOGI(TAG, "Encoder: volume up");
-                post_app_cmd(APP_CMD_VOLUME_UP);
-                volume_activity();
-                break;
-
-            case INPUT_EVT_ROTATE_CCW:
-                ESP_LOGI(TAG, "Encoder: volume down");
-                post_app_cmd(APP_CMD_VOLUME_DOWN);
-                volume_activity();
-                break;
-
-            case INPUT_EVT_SHORT_PRESS:
-                ESP_LOGI(TAG, "Encoder: mute/unmute");
-                post_app_cmd(APP_CMD_TOGGLE_MUTE);
-                volume_activity();
-                break;
-
-            case INPUT_EVT_LONG_PRESS:
-                ESP_LOGI(TAG, "Encoder: exit volume mode");
-                exit_volume_mode();
-                break;
-
-            case INPUT_EVT_AUTO_HIDE_VOLUME:
-                if ((now - s_last_volume_activity_us) >= VOLUME_AUTO_HIDE_US)
-                {
-                    ESP_LOGI(TAG, "Encoder: auto-hide volume mode");
-                    exit_volume_mode();
-                }
-                break;
-
-            default:
-                break;
-            }
+            ESP_LOGW(
+                TAG,
+                "Failed to forward input event %d: %s",
+                (int)event,
+                esp_err_to_name(ret));
         }
     }
 }
@@ -329,14 +153,6 @@ esp_err_t input_knob_init(void)
         ESP_LOGE(TAG, "Failed to create input event queue");
         return ESP_ERR_NO_MEM;
     }
-
-    /* Auto-hide timer for Volume Mode */
-    const esp_timer_create_args_t timer_args = {
-        .callback = volume_autohide_timer_cb,
-        .name = "volume_autohide",
-    };
-
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &s_volume_autohide_timer));
 
     /* 1. Initialize Knob for Rotation (CW/CCW) */
     knob_config_t knob_cfg = {

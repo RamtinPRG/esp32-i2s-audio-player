@@ -13,12 +13,39 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 static const char *TAG = "APP_CONTROLLER";
 
 /* --------------------------------------------------------------------------
  * Internal application state
  * -------------------------------------------------------------------------- */
+typedef enum
+{
+    APP_MESSAGE_COMMAND = 0,
+    APP_MESSAGE_INPUT,
+} app_message_type_t;
+
+typedef struct
+{
+    app_message_type_t type;
+
+    /*
+     * For input messages: reject events from a different
+     * application mode when they are eventually processed.
+     */
+    app_mode_t input_mode;
+
+    union
+    {
+        app_cmd_t command;
+        input_event_t input;
+    } data;
+} app_message_t;
+
+static bool s_volume_overlay_visible = false;
+static int64_t s_last_volume_activity_us = 0;
+
 static QueueHandle_t s_player_cmd_queue = NULL;
 static QueueHandle_t s_app_cmd_queue = NULL;
 
@@ -67,6 +94,127 @@ static void change_volume(int delta)
     s_mute = false;
 
     apply_volume_and_mute();
+}
+
+static void show_volume_overlay(bool visible)
+{
+    s_volume_overlay_visible = visible;
+
+    if (visible)
+    {
+        s_last_volume_activity_us = esp_timer_get_time();
+    }
+
+    if (lvgl_port_lock(200))
+    {
+        ui_show_volume_mode(visible);
+        lvgl_port_unlock();
+    }
+}
+
+static void check_volume_overlay_timeout(void)
+{
+    if (!s_volume_overlay_visible)
+    {
+        return;
+    }
+
+    int64_t elapsed =
+        esp_timer_get_time() - s_last_volume_activity_us;
+
+    if (elapsed >= VOLUME_AUTO_HIDE_US)
+    {
+        show_volume_overlay(false);
+    }
+}
+
+/*
+ * Returns true when the input produces an application command.
+ * Overlay-only actions are handled here and return false.
+ */
+static bool interpret_input(
+    input_event_t event,
+    app_mode_t mode,
+    app_cmd_t *command)
+{
+    switch (mode)
+    {
+    case APP_MODE_BOOT_MENU:
+        switch (event)
+        {
+        case INPUT_EVT_ROTATE_CW:
+        case INPUT_EVT_ROTATE_CCW:
+            *command = APP_CMD_TOGGLE_BOOT_SELECTION;
+            return true;
+
+        case INPUT_EVT_SHORT_PRESS:
+            *command = APP_CMD_CONFIRM_BOOT_SELECTION;
+            return true;
+
+        default:
+            return false;
+        }
+
+    case APP_MODE_TRANSFER:
+        if (event == INPUT_EVT_LONG_PRESS)
+        {
+            *command = APP_CMD_FINISH_TRANSFER;
+            return true;
+        }
+        return false;
+
+    case APP_MODE_PLAYER:
+        if (event == INPUT_EVT_LONG_PRESS)
+        {
+            show_volume_overlay(!s_volume_overlay_visible);
+            return false;
+        }
+
+        if (s_volume_overlay_visible)
+        {
+            switch (event)
+            {
+            case INPUT_EVT_ROTATE_CW:
+                *command = APP_CMD_VOLUME_UP;
+                break;
+
+            case INPUT_EVT_ROTATE_CCW:
+                *command = APP_CMD_VOLUME_DOWN;
+                break;
+
+            case INPUT_EVT_SHORT_PRESS:
+                *command = APP_CMD_TOGGLE_MUTE;
+                break;
+
+            default:
+                return false;
+            }
+
+            s_last_volume_activity_us = esp_timer_get_time();
+            return true;
+        }
+
+        switch (event)
+        {
+        case INPUT_EVT_ROTATE_CW:
+            *command = APP_CMD_NEXT_TRACK;
+            return true;
+
+        case INPUT_EVT_ROTATE_CCW:
+            *command = APP_CMD_PREVIOUS_TRACK;
+            return true;
+
+        case INPUT_EVT_SHORT_PRESS:
+            *command = APP_CMD_TOGGLE_PLAYBACK;
+            return true;
+
+        default:
+            return false;
+        }
+
+    default:
+        return false;
+    }
 }
 
 /*
@@ -374,10 +522,6 @@ static void app_control_task(void *arg)
 {
     (void)arg;
 
-    /*
-     * The controller owns the initial boot-menu presentation.
-     * Display initialization has already completed in app_main().
-     */
     if (lvgl_port_lock(500))
     {
         ui_show_boot_menu(true);
@@ -387,16 +531,60 @@ static void app_control_task(void *arg)
         lvgl_port_unlock();
     }
 
-    app_cmd_t cmd;
+    app_message_t message;
 
     while (1)
     {
-        if (xQueueReceive(s_app_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE)
+        /*
+         * While the overlay is visible, wake periodically to check
+         * inactivity. Otherwise sleep until a message arrives.
+         */
+        TickType_t wait_ticks = portMAX_DELAY;
+
+        if (s_volume_overlay_visible)
+        {
+            wait_ticks = pdMS_TO_TICKS(50);
+
+            if (wait_ticks == 0)
+            {
+                wait_ticks = 1;
+            }
+        }
+
+        BaseType_t received =
+            xQueueReceive(s_app_cmd_queue, &message, wait_ticks);
+
+        check_volume_overlay_timeout();
+
+        if (received != pdTRUE)
         {
             continue;
         }
 
         app_mode_t mode = app_controller_get_mode();
+        app_cmd_t cmd;
+
+        if (message.type == APP_MESSAGE_INPUT)
+        {
+            if (message.input_mode != mode)
+            {
+                continue;
+            }
+
+            if (!interpret_input(message.data.input, mode, &cmd))
+            {
+                continue;
+            }
+        }
+        else if (message.type == APP_MESSAGE_COMMAND)
+        {
+            cmd = message.data.command;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Unknown application message type");
+            continue;
+        }
 
         if (handle_volume_command(cmd, mode))
         {
@@ -495,7 +683,7 @@ static void app_control_task(void *arg)
 esp_err_t app_controller_start(void)
 {
     s_player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
-    s_app_cmd_queue = xQueueCreate(8, sizeof(app_cmd_t));
+    s_app_cmd_queue = xQueueCreate(8, sizeof(app_message_t));
 
     if (s_player_cmd_queue == NULL || s_app_cmd_queue == NULL)
     {
@@ -547,7 +735,50 @@ esp_err_t app_controller_submit(app_cmd_t cmd)
         return ESP_ERR_INVALID_STATE;
     }
 
-    return xQueueSend(s_app_cmd_queue, &cmd, 0) == pdTRUE
+    app_message_t message = {
+        .type = APP_MESSAGE_COMMAND,
+        .data.command = cmd,
+    };
+
+    return xQueueSend(s_app_cmd_queue, &message, 0) == pdTRUE
+               ? ESP_OK
+               : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t app_controller_post_input(input_event_t event)
+{
+    switch (event)
+    {
+    case INPUT_EVT_ROTATE_CW:
+    case INPUT_EVT_ROTATE_CCW:
+    case INPUT_EVT_SHORT_PRESS:
+    case INPUT_EVT_LONG_PRESS:
+        break;
+
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_app_cmd_queue == NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    app_mode_t mode = app_controller_get_mode();
+
+    /* Input during a transition is intentionally ignored. */
+    if (mode == APP_MODE_BUSY)
+    {
+        return ESP_OK;
+    }
+
+    app_message_t message = {
+        .type = APP_MESSAGE_INPUT,
+        .input_mode = mode,
+        .data.input = event,
+    };
+
+    return xQueueSend(s_app_cmd_queue, &message, 0) == pdTRUE
                ? ESP_OK
                : ESP_ERR_TIMEOUT;
 }

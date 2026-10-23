@@ -10,6 +10,7 @@
 #include "ui.h"
 
 esp_err_t app_controller_start(void);
+esp_err_t app_controller_post_input(input_event_t event);
 
 app_mode_t app_controller_get_mode(void);
 

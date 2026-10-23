@@ -8,7 +8,6 @@ typedef enum
     INPUT_EVT_ROTATE_CCW,
     INPUT_EVT_SHORT_PRESS,
     INPUT_EVT_LONG_PRESS,
-    INPUT_EVT_AUTO_HIDE_VOLUME,
 } input_event_t;
 
 typedef enum
