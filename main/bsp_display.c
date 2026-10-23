@@ -69,7 +69,7 @@ void bsp_display_init(void)
         .panel_handle = panel_handle,
         .hres = LCD_H_RES,
         .vres = LCD_V_RES,
-        .buffer_size = LCD_H_RES * 70,
+        .buffer_size = LCD_H_RES * 40,
         .double_buffer = true,
         .color_format = LV_COLOR_FORMAT_RGB565,
         .flags = {
