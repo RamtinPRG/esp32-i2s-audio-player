@@ -14,11 +14,10 @@
 esp_err_t app_controller_start(void);
 
 QueueHandle_t app_controller_get_player_cmd_queue(void);
-app_mode_t app_mode_get(void);
+app_mode_t app_controller_get_mode(void);
 
 /* Task-context only. Success means queued, not completed. */
-esp_err_t app_mode_submit(app_cmd_t cmd);
-boot_option_t *app_controller_get_boot_option_ptr(void);
+esp_err_t app_controller_submit(app_cmd_t cmd);
 
 volatile uint8_t *app_controller_get_volume_ptr(void);
 volatile bool *app_controller_get_mute_ptr(void);

@@ -31,20 +31,11 @@ void app_main(void)
     /* Initialize encoder/input state machine */
     input_knob_config_t input_cfg = {
         .player_cmd_queue = app_controller_get_player_cmd_queue(),
-        .boot_option = app_controller_get_boot_option_ptr(),
         .volume = app_controller_get_volume_ptr(),
         .mute = app_controller_get_mute_ptr(),
     };
 
     ESP_ERROR_CHECK(input_knob_init(&input_cfg));
-
-    /* Show boot menu */
-    if (lvgl_port_lock(500))
-    {
-        ui_show_boot_menu(true);
-        ui_set_boot_selection(*app_controller_get_boot_option_ptr());
-        lvgl_port_unlock();
-    }
 
     ESP_LOGI(TAG, "Boot menu active");
 }

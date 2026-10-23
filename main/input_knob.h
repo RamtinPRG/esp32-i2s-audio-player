@@ -2,8 +2,9 @@
 #ifndef INPUT_KNOB_H
 #define INPUT_KNOB_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "app_types.h"
-#include "ui.h"
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -12,7 +13,6 @@
 typedef struct
 {
     QueueHandle_t player_cmd_queue;
-    boot_option_t *boot_option;
 
     volatile uint8_t *volume;
     volatile bool *mute;

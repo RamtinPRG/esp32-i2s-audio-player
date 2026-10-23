@@ -81,7 +81,7 @@ static void send_player_cmd(player_cmd_t cmd)
 
 static void post_app_cmd(app_cmd_t cmd)
 {
-    esp_err_t ret = app_mode_submit(cmd);
+    esp_err_t ret = app_controller_submit(cmd);
 
     if (ret != ESP_OK)
     {
@@ -232,11 +232,9 @@ static void input_control_task(void *arg)
          * Read one mode snapshot for this event.
          * Only the application controller changes application mode.
          */
-        app_mode_t mode = app_mode_get();
+        app_mode_t mode = app_controller_get_mode();
 
-        /* ------------------------------------------------------------ */
-        /* Boot menu, transfer mode, and busy state                       */
-        /* ------------------------------------------------------------ */
+        /* Boot menu, transfer mode, and busy state. */
         if (mode != APP_MODE_PLAYER)
         {
             if (mode == APP_MODE_BOOT_MENU)
@@ -245,27 +243,11 @@ static void input_control_task(void *arg)
                 {
                 case INPUT_EVT_ROTATE_CW:
                 case INPUT_EVT_ROTATE_CCW:
-                    *s_cfg.boot_option =
-                        (*s_cfg.boot_option == BOOT_OPT_PLAYER)
-                            ? BOOT_OPT_UPLOAD
-                            : BOOT_OPT_PLAYER;
-
-                    if (lvgl_port_lock(200))
-                    {
-                        ui_set_boot_selection(*s_cfg.boot_option);
-                        lvgl_port_unlock();
-                    }
+                    post_app_cmd(APP_CMD_TOGGLE_BOOT_SELECTION);
                     break;
 
                 case INPUT_EVT_SHORT_PRESS:
-                    if (*s_cfg.boot_option == BOOT_OPT_PLAYER)
-                    {
-                        post_app_cmd(APP_CMD_START_PLAYER);
-                    }
-                    else
-                    {
-                        post_app_cmd(APP_CMD_START_TRANSFER);
-                    }
+                    post_app_cmd(APP_CMD_CONFIRM_BOOT_SELECTION);
                     break;
 
                 default:
@@ -274,14 +256,12 @@ static void input_control_task(void *arg)
             }
             else if (mode == APP_MODE_TRANSFER)
             {
-                /* Long press finishes transfer and starts the player. */
                 if (evt == INPUT_EVT_LONG_PRESS)
                 {
                     post_app_cmd(APP_CMD_FINISH_TRANSFER);
                 }
             }
 
-            /* Ignore all input while busy. */
             continue;
         }
 
@@ -412,7 +392,6 @@ esp_err_t input_knob_init(const input_knob_config_t *cfg)
 {
     if (cfg == NULL ||
         cfg->player_cmd_queue == NULL ||
-        cfg->boot_option == NULL ||
         cfg->volume == NULL ||
         cfg->mute == NULL)
     {
