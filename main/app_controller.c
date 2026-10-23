@@ -622,26 +622,55 @@ static void app_control_task(void *arg)
  * -------------------------------------------------------------------------- */
 esp_err_t app_controller_start(void)
 {
-    s_player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
-    s_app_cmd_queue = xQueueCreate(8, sizeof(app_message_t));
-
-    if (s_player_cmd_queue == NULL || s_app_cmd_queue == NULL)
+    /* Startup is called serially from app_main, before input is enabled. */
+    if (s_player_cmd_queue != NULL || s_app_cmd_queue != NULL)
     {
-        ESP_LOGE(TAG, "Failed to create application queues");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_player_cmd_queue = xQueueCreate(8, sizeof(player_cmd_t));
+
+    if (s_player_cmd_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create player command queue");
         return ESP_ERR_NO_MEM;
     }
 
-    xTaskCreate(
-        app_control_task,
-        "app_ctrl",
-        10240,
-        NULL,
-        6,
-        NULL);
+    s_app_cmd_queue = xQueueCreate(8, sizeof(app_message_t));
 
-    ESP_LOGI(TAG, "Application mode control started");
+    if (s_app_cmd_queue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create application command queue");
+        goto fail;
+    }
 
+    if (xTaskCreate(
+            app_control_task,
+            "app_ctrl",
+            10240,
+            NULL,
+            6,
+            NULL) != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to create application control task");
+        goto fail;
+    }
+
+    ESP_LOGI(TAG, "Application controller started");
     return ESP_OK;
+
+fail:
+    /* No controller task was created, so neither queue has a consumer. */
+    if (s_app_cmd_queue != NULL)
+    {
+        vQueueDelete(s_app_cmd_queue);
+        s_app_cmd_queue = NULL;
+    }
+
+    vQueueDelete(s_player_cmd_queue);
+    s_player_cmd_queue = NULL;
+
+    return ESP_ERR_NO_MEM;
 }
 
 app_mode_t app_controller_get_mode(void)
