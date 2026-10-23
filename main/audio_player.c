@@ -3,7 +3,6 @@
 
 #include "app_config.h"
 #include "audio_output.h"
-#include "ui.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -12,10 +11,10 @@
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "ui_presenter.h"
 
 static const char *TAG = "AUDIO_PLAYER";
 
@@ -41,6 +40,12 @@ static bool s_initialized = false;
 static volatile bool s_playing = true;
 static volatile uint8_t s_volume = 100;
 static volatile bool s_mute = false;
+
+/*
+ * Only sd_read_task modifies this snapshot.
+ * Publishing copies it into the presenter queue.
+ */
+static playback_view_t s_playback_view;
 
 /* --------------------------------------------------------------------------
  * Internal helpers
@@ -106,6 +111,22 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
     }
 }
 
+static void publish_playback_view(void)
+{
+    s_playback_view.playing = s_playing;
+
+    esp_err_t ret =
+        ui_presenter_publish_playback(&s_playback_view);
+
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(
+            TAG,
+            "Failed to publish playback view: %s",
+            esp_err_to_name(ret));
+    }
+}
+
 /* --------------------------------------------------------------------------
  * SD read task
  * -------------------------------------------------------------------------- */
@@ -153,12 +174,7 @@ static void sd_read_task(void *arg)
             else if (cmd == PLAYER_CMD_TOGGLE_PLAY)
             {
                 s_playing = !s_playing;
-
-                if (lvgl_port_lock(500))
-                {
-                    ui_update_playback(s_playing);
-                    lvgl_port_unlock();
-                }
+                publish_playback_view();
             }
         }
 
@@ -223,24 +239,22 @@ static void sd_read_task(void *arg)
                 img_arg = &s_playlist->covers[s_playlist->current_index].dsc;
             }
 
-            /* Thread-safe UI update */
-            if (lvgl_port_lock(500))
-            {
-                ui_notify_track_started(
-                    filepath,
-                    img_arg,
-                    s_playlist->current_index + 1,
-                    s_playlist->count,
-                    duration_sec);
+            s_playback_view.track_valid = true;
+            s_playback_view.track_revision++;
 
-                /*
-                 * If the user changed track while paused, keep the UI in the
-                 * paused state.
-                 */
-                ui_update_playback(s_playing);
+            snprintf(
+                s_playback_view.path,
+                sizeof(s_playback_view.path),
+                "%s",
+                filepath);
 
-                lvgl_port_unlock();
-            }
+            s_playback_view.cover_src = img_arg;
+            s_playback_view.track_index = s_playlist->current_index + 1;
+            s_playback_view.track_count = s_playlist->count;
+            s_playback_view.duration_sec = duration_sec;
+            s_playback_view.elapsed_sec = 0;
+
+            publish_playback_view();
         }
 
         /* ------------------------------------------------------------
@@ -283,15 +297,6 @@ static void sd_read_task(void *arg)
                 "⏹ Finished playing: %s",
                 s_playlist->files[s_playlist->current_index]);
 
-            /* Thread-safe UI update */
-            if (lvgl_port_lock(500))
-            {
-                ui_notify_track_finished(
-                    s_playlist->files[s_playlist->current_index]);
-
-                lvgl_port_unlock();
-            }
-
             fclose(f);
             f = NULL;
 
@@ -318,18 +323,10 @@ static void sd_read_task(void *arg)
 
         if (current_elapsed_sec != last_elapsed_sec)
         {
-            /*
-             * Use a short timeout so UI locking doesn't stutter the audio DMA.
-             *
-             * Later we will move this to a UI event queue.
-             */
-            if (lvgl_port_lock(10))
-            {
-                ui_update_elapsed(current_elapsed_sec);
-                lvgl_port_unlock();
+            s_playback_view.elapsed_sec = current_elapsed_sec;
+            publish_playback_view();
 
-                last_elapsed_sec = current_elapsed_sec;
-            }
+            last_elapsed_sec = current_elapsed_sec;
         }
 
         /* Send filled buffer to I2S writer */

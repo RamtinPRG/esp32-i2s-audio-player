@@ -5,6 +5,7 @@
 #include "bsp_sdcard.h"
 #include "input_knob.h"
 #include "ui.h"
+#include "ui_presenter.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -15,6 +16,7 @@ void app_main(void)
 {
     /* Initialize display and LVGL UI */
     bsp_display_init();
+    ESP_ERROR_CHECK(ui_presenter_init());
 
     /* Mount SD card */
     if (lvgl_port_lock(500))
