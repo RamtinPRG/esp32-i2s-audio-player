@@ -14,6 +14,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "ui_presenter.h"
 
 static const char *TAG = "APP_CONTROLLER";
 
@@ -63,16 +64,30 @@ static void set_mode(app_mode_t mode)
     atomic_store(&s_app_mode, (int)mode);
 }
 
+static void publish_controls_view(void)
+{
+    controls_view_t view = {
+        .upload_selected = (s_boot_option == BOOT_OPT_UPLOAD),
+        .volume_overlay_visible = s_volume_overlay_visible,
+        .volume = s_volume,
+        .muted = s_mute,
+    };
+
+    esp_err_t ret = ui_presenter_publish_controls(&view);
+
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(
+            TAG,
+            "Failed to publish controls view: %s",
+            esp_err_to_name(ret));
+    }
+}
+
 static void apply_volume_and_mute(void)
 {
     audio_player_set_volume(s_volume, s_mute);
-
-    if (lvgl_port_lock(200))
-    {
-        ui_update_volume(s_volume);
-        ui_update_mute(s_mute);
-        lvgl_port_unlock();
-    }
+    publish_controls_view();
 }
 
 static void change_volume(int delta)
@@ -105,11 +120,7 @@ static void show_volume_overlay(bool visible)
         s_last_volume_activity_us = esp_timer_get_time();
     }
 
-    if (lvgl_port_lock(200))
-    {
-        ui_show_volume_mode(visible);
-        lvgl_port_unlock();
-    }
+    publish_controls_view();
 }
 
 static void check_volume_overlay_timeout(void)
@@ -318,6 +329,7 @@ static bool handle_playback_command(app_cmd_t cmd, app_mode_t mode)
 
     return true;
 }
+
 /* --------------------------------------------------------------------------
  * Mode transitions
  * -------------------------------------------------------------------------- */
@@ -353,7 +365,6 @@ static void start_player_mode(bool from_transfer)
         if (lvgl_port_lock(500))
         {
             ui_show_boot_menu(true);
-            ui_set_boot_selection(s_boot_option);
             lvgl_port_unlock();
         }
 
@@ -392,7 +403,6 @@ static void start_player_mode(bool from_transfer)
         if (lvgl_port_lock(500))
         {
             ui_show_boot_menu(true);
-            ui_set_boot_selection(s_boot_option);
             lvgl_port_unlock();
         }
 
@@ -444,7 +454,6 @@ static void enter_transfer_from_boot_menu(void)
         {
             ui_show_transfer_screen(false, NULL, NULL, NULL);
             ui_show_boot_menu(true);
-            ui_set_boot_selection(s_boot_option);
             lvgl_port_unlock();
         }
 
@@ -471,7 +480,6 @@ static void enter_transfer_from_boot_menu(void)
         {
             ui_show_transfer_screen(false, NULL, NULL, NULL);
             ui_show_boot_menu(true);
-            ui_set_boot_selection(s_boot_option);
             lvgl_port_unlock();
         }
 
@@ -522,12 +530,11 @@ static void app_control_task(void *arg)
 {
     (void)arg;
 
+    publish_controls_view();
+
     if (lvgl_port_lock(500))
     {
         ui_show_boot_menu(true);
-        ui_set_boot_selection(s_boot_option);
-        ui_update_volume(s_volume);
-        ui_update_mute(s_mute);
         lvgl_port_unlock();
     }
 
@@ -609,11 +616,7 @@ static void app_control_task(void *arg)
                     ? BOOT_OPT_UPLOAD
                     : BOOT_OPT_PLAYER;
 
-            if (lvgl_port_lock(200))
-            {
-                ui_set_boot_selection(s_boot_option);
-                lvgl_port_unlock();
-            }
+            publish_controls_view();
             continue;
 
         case APP_CMD_CONFIRM_BOOT_SELECTION:

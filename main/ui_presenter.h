@@ -29,10 +29,21 @@ typedef struct
     bool playing;
 } playback_view_t;
 
+typedef struct
+{
+    bool upload_selected;
+    bool volume_overlay_visible;
+    uint8_t volume;
+    bool muted;
+} controls_view_t;
+
 /* Call once after display/UI initialization, before starting playback. */
 esp_err_t ui_presenter_init(void);
 
 /* Task-context only. Copies the snapshot without waiting for LVGL. */
 esp_err_t ui_presenter_publish_playback(const playback_view_t *view);
+
+/* Task-context only. Copies a complete controls snapshot. */
+esp_err_t ui_presenter_publish_controls(const controls_view_t *view);
 
 #endif
