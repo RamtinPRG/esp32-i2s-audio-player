@@ -62,4 +62,12 @@ esp_err_t ui_presenter_show_screen(
     ui_screen_t screen,
     const char *status);
 
+/* Task-context only. Text is copied into presenter-owned storage. */
+void ui_presenter_set_transfer_status(const char *status);
+
+void ui_presenter_update_transfer_progress(uint32_t done_bytes, uint32_t total_bytes);
+
+/* Update status and progress together. */
+void ui_presenter_set_transfer_state(const char *status, uint32_t done_bytes, uint32_t total_bytes);
+
 #endif

@@ -7,8 +7,25 @@
 #include "freertos/queue.h"
 #include "lvgl.h"
 #include <stdio.h>
+#include <string.h>
+#include "freertos/task.h"
+#include "app_types.h"
 
 #define SCREEN_STATUS_MAX_LEN 96
+#define TRANSFER_STATUS_MAX_LEN 96
+
+typedef struct
+{
+    char status[TRANSFER_STATUS_MAX_LEN];
+    uint32_t done_bytes;
+    uint32_t total_bytes;
+
+    bool status_dirty;
+    bool progress_dirty;
+} transfer_view_t;
+
+static portMUX_TYPE s_transfer_lock = portMUX_INITIALIZER_UNLOCKED;
+static transfer_view_t s_transfer_view;
 
 typedef struct
 {
@@ -130,12 +147,49 @@ static void present_screen(void)
     s_has_rendered_screen = true;
 }
 
+static void present_transfer(void)
+{
+    /*
+     * Keep pending updates until the transfer screen is visible.
+     * These screen variables are owned by the LVGL callback.
+     */
+    if (!s_has_rendered_screen ||
+        s_rendered_screen != UI_SCREEN_TRANSFER)
+    {
+        return;
+    }
+
+    transfer_view_t view;
+
+    portENTER_CRITICAL(&s_transfer_lock);
+
+    view = s_transfer_view;
+
+    s_transfer_view.status_dirty = false;
+    s_transfer_view.progress_dirty = false;
+
+    portEXIT_CRITICAL(&s_transfer_lock);
+
+    if (view.status_dirty)
+    {
+        ui_set_transfer_status(view.status);
+    }
+
+    if (view.progress_dirty)
+    {
+        ui_update_transfer_progress(
+            view.done_bytes,
+            view.total_bytes);
+    }
+}
+
 static void presenter_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
 
     present_screen();
     present_controls();
+    present_transfer();
 
     playback_view_t view;
 
@@ -320,4 +374,61 @@ esp_err_t ui_presenter_show_screen(
     return xQueueOverwrite(s_screen_queue, &view) == pdPASS
                ? ESP_OK
                : ESP_FAIL;
+}
+
+void ui_presenter_set_transfer_status(const char *status)
+{
+    if (status == NULL)
+    {
+        return;
+    }
+
+    /* Format outside the critical section. */
+    char text[TRANSFER_STATUS_MAX_LEN] = {0};
+    snprintf(text, sizeof(text), "%s", status);
+
+    portENTER_CRITICAL(&s_transfer_lock);
+
+    memcpy(s_transfer_view.status, text, sizeof(text));
+    s_transfer_view.status_dirty = true;
+
+    portEXIT_CRITICAL(&s_transfer_lock);
+}
+
+void ui_presenter_update_transfer_progress(
+    uint32_t done_bytes,
+    uint32_t total_bytes)
+{
+    portENTER_CRITICAL(&s_transfer_lock);
+
+    s_transfer_view.done_bytes = done_bytes;
+    s_transfer_view.total_bytes = total_bytes;
+    s_transfer_view.progress_dirty = true;
+
+    portEXIT_CRITICAL(&s_transfer_lock);
+}
+
+void ui_presenter_set_transfer_state(
+    const char *status,
+    uint32_t done_bytes,
+    uint32_t total_bytes)
+{
+    if (status == NULL)
+    {
+        return;
+    }
+
+    char text[TRANSFER_STATUS_MAX_LEN] = {0};
+    snprintf(text, sizeof(text), "%s", status);
+
+    portENTER_CRITICAL(&s_transfer_lock);
+
+    memcpy(s_transfer_view.status, text, sizeof(text));
+    s_transfer_view.done_bytes = done_bytes;
+    s_transfer_view.total_bytes = total_bytes;
+
+    s_transfer_view.status_dirty = true;
+    s_transfer_view.progress_dirty = true;
+
+    portEXIT_CRITICAL(&s_transfer_lock);
 }

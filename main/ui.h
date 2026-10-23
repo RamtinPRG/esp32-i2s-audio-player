@@ -4,13 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "lvgl.h"
-
-/* Boot menu selection */
-typedef enum
-{
-    BOOT_OPT_PLAYER = 0,
-    BOOT_OPT_UPLOAD,
-} boot_option_t;
+#include "app_types.h"
 
 /* Initialize the UI elements */
 void ui_init(void);

@@ -36,4 +36,10 @@ typedef enum
     APP_CMD_TOGGLE_PLAYBACK,
 } app_cmd_t;
 
+typedef enum
+{
+    BOOT_OPT_PLAYER = 0,
+    BOOT_OPT_UPLOAD,
+} boot_option_t;
+
 #endif

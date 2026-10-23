@@ -9,7 +9,6 @@
 #include "wifi_transfer.h"
 
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -406,13 +405,8 @@ static void enter_transfer_from_boot_menu(void)
 
     audio_player_set_playback(false);
 
+    ui_presenter_set_transfer_state("Starting Wi-Fi...", 0, 0);
     present_screen(UI_SCREEN_TRANSFER, NULL);
-
-    if (lvgl_port_lock(500))
-    {
-        ui_set_transfer_status("Starting Wi-Fi...");
-        lvgl_port_unlock();
-    }
 
     if (wifi_transfer_start() != ESP_OK)
     {
@@ -420,11 +414,7 @@ static void enter_transfer_from_boot_menu(void)
 
         wifi_transfer_stop();
 
-        if (lvgl_port_lock(500))
-        {
-            ui_set_transfer_status("Wi-Fi start failed!");
-            lvgl_port_unlock();
-        }
+        ui_presenter_set_transfer_status("Wi-Fi start failed!");
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -441,11 +431,7 @@ static void enter_transfer_from_boot_menu(void)
         http_upload_server_stop();
         wifi_transfer_stop();
 
-        if (lvgl_port_lock(500))
-        {
-            ui_set_transfer_status("HTTP start failed!");
-            lvgl_port_unlock();
-        }
+        ui_presenter_set_transfer_status("HTTP start failed!");
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
@@ -455,11 +441,7 @@ static void enter_transfer_from_boot_menu(void)
         return;
     }
 
-    if (lvgl_port_lock(500))
-    {
-        ui_set_transfer_status("Wi-Fi & HTTP ready.");
-        lvgl_port_unlock();
-    }
+    ui_presenter_set_transfer_status("Wi-Fi & HTTP ready.");
 
     set_mode(APP_MODE_TRANSFER);
 }
@@ -468,11 +450,7 @@ static void finish_transfer_and_enter_player(void)
 {
     set_mode(APP_MODE_BUSY);
 
-    if (lvgl_port_lock(500))
-    {
-        ui_set_transfer_status("Stopping services...");
-        lvgl_port_unlock();
-    }
+    ui_presenter_set_transfer_status("Stopping services...");
 
     http_upload_server_stop();
     wifi_transfer_stop();
@@ -480,11 +458,7 @@ static void finish_transfer_and_enter_player(void)
     /* Give the system time to finish cleanup */
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    if (lvgl_port_lock(500))
-    {
-        ui_set_transfer_status("Exiting transfer mode...");
-        lvgl_port_unlock();
-    }
+    ui_presenter_set_transfer_status("Exiting transfer mode...");
 
     vTaskDelay(pdMS_TO_TICKS(250));
 

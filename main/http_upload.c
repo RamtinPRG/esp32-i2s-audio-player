@@ -2,7 +2,7 @@
 #include "http_upload.h"
 
 #include "app_config.h"
-#include "ui.h"
+#include "ui_presenter.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -14,7 +14,6 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
 #include "ff.h"
 
 static const char *TAG = "HTTP_UPLOAD";
@@ -229,11 +228,10 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Upload start: %s", final_path);
 
-    if (lvgl_port_lock(100))
-    {
-        ui_set_transfer_status("Uploading...");
-        lvgl_port_unlock();
-    }
+    ui_presenter_set_transfer_state(
+        "Uploading...",
+        0,
+        (uint32_t)req->content_len);
 
     FILE *f = fopen(tmp_path, "wb");
 
@@ -281,14 +279,12 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
         remaining -= received;
         total_written += written;
 
-        /* Update UI progress occasionally */
+        /* Publish progress occasionally. */
         if ((total_written % (64 * 1024)) < sizeof(rx_buffer))
         {
-            if (lvgl_port_lock(10))
-            {
-                ui_update_transfer_progress(total_written, req->content_len);
-                lvgl_port_unlock();
-            }
+            ui_presenter_update_transfer_progress(
+                (uint32_t)total_written,
+                (uint32_t)req->content_len);
         }
     }
 
@@ -312,12 +308,10 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Upload complete: %s (%u bytes)", final_path, (unsigned)total_written);
 
-    if (lvgl_port_lock(100))
-    {
-        ui_set_transfer_status("Upload complete!");
-        ui_update_transfer_progress(100, 100);
-        lvgl_port_unlock();
-    }
+    ui_presenter_set_transfer_state(
+        "Upload complete!",
+        100,
+        100);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"ok\":true}", HTTPD_RESP_USE_STRLEN);
