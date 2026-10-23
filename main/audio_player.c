@@ -4,7 +4,6 @@
 #include "app_config.h"
 #include "audio_output.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -133,6 +132,11 @@ static void publish_playback_view(void)
 static void sd_read_task(void *arg)
 {
     (void)arg;
+
+    /* Startup releases workers only after all resources are ready. */
+    while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) == 0)
+    {
+    }
 
     audio_buffer_t buf;
     FILE *f = NULL;
@@ -344,9 +348,12 @@ static void i2s_write_task(void *arg)
 {
     (void)arg;
 
-    audio_buffer_t buf;
+    /* Startup releases workers only after all resources are ready. */
+    while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) == 0)
+    {
+    }
 
-    ESP_ERROR_CHECK(i2s_channel_enable(s_tx_chan));
+    audio_buffer_t buf;
 
     while (1)
     {
@@ -390,83 +397,141 @@ static void i2s_write_task(void *arg)
  * -------------------------------------------------------------------------- */
 esp_err_t audio_player_start(playlist_t *playlist, QueueHandle_t player_cmd_queue)
 {
-    if (playlist == NULL || player_cmd_queue == NULL)
+    /* Called serially by the controller; this is not a restart API. */
+    if (s_initialized || s_tx_chan != NULL)
+    {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (playlist == NULL || player_cmd_queue == NULL ||
+        playlist->count <= 0 || playlist->count > MAX_FILES ||
+        playlist->current_index < 0 ||
+        playlist->current_index >= playlist->count)
     {
         return ESP_ERR_INVALID_ARG;
     }
 
+    TaskHandle_t reader_task = NULL;
+    TaskHandle_t writer_task = NULL;
+    uint8_t *buffers[AUDIO_BUFFER_COUNT] = {0};
+
     s_playlist = playlist;
     s_player_cmd_queue = player_cmd_queue;
 
-    if (!s_initialized)
+    esp_err_t ret = audio_output_init(&s_tx_chan);
+    if (ret != ESP_OK)
     {
-        ESP_LOGI(TAG, "Initializing audio player");
+        goto fail;
+    }
 
-        esp_err_t ret = audio_output_init(&s_tx_chan);
+    ret = ESP_ERR_NO_MEM;
+    s_free_buffer_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
+    if (s_free_buffer_queue == NULL)
+    {
+        goto fail;
+    }
 
-        if (ret != ESP_OK)
+    s_audio_data_queue = xQueueCreate(AUDIO_BUFFER_COUNT, sizeof(audio_buffer_t));
+    if (s_audio_data_queue == NULL)
+    {
+        goto fail;
+    }
+
+    for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
+    {
+        buffers[i] = heap_caps_calloc(
+            AUDIO_BUFF_SIZE, 1, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (buffers[i] == NULL)
         {
-            ESP_LOGE(TAG, "Failed to initialize audio output");
-            return ret;
+            goto fail;
         }
 
-        /* Create buffer queues */
-        s_free_buffer_queue = xQueueCreate(
-            AUDIO_BUFFER_COUNT,
-            sizeof(audio_buffer_t));
-
-        s_audio_data_queue = xQueueCreate(
-            AUDIO_BUFFER_COUNT,
-            sizeof(audio_buffer_t));
-
-        assert(s_free_buffer_queue != NULL);
-        assert(s_audio_data_queue != NULL);
-
-        /* Allocate DMA-capable audio buffers */
-        for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
+        audio_buffer_t buf = {.data = buffers[i], .len = 0};
+        if (xQueueSend(s_free_buffer_queue, &buf, 0) != pdTRUE)
         {
-            uint8_t *mem = heap_caps_calloc(
-                AUDIO_BUFF_SIZE,
-                1,
-                MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-
-            if (mem == NULL)
-            {
-                ESP_LOGE(TAG, "Failed to allocate DMA-capable audio buffer");
-                abort();
-            }
-
-            audio_buffer_t buf = {
-                .data = mem,
-                .len = 0,
-            };
-
-            xQueueSend(s_free_buffer_queue, &buf, 0);
+            ret = ESP_FAIL;
+            goto fail;
         }
+    }
 
-        /* Create audio tasks */
-        xTaskCreate(
-            sd_read_task,
-            "sd_read_task",
-            8192,
-            NULL,
-            6,
-            NULL);
+    if (xTaskCreate(sd_read_task, "sd_read_task", 8192, NULL, 6,
+                    &reader_task) != pdPASS)
+    {
+        goto fail;
+    }
 
-        xTaskCreate(
-            i2s_write_task,
-            "i2s_write_task",
-            4096,
-            NULL,
-            5,
-            NULL);
+    if (xTaskCreate(i2s_write_task, "i2s_write_task", 4096, NULL, 5,
+                    &writer_task) != pdPASS)
+    {
+        goto fail;
+    }
 
-        s_initialized = true;
+    /* Neither worker can access the driver yet. */
+    ret = i2s_channel_enable(s_tx_chan);
+    if (ret != ESP_OK)
+    {
+        goto fail;
     }
 
     s_playing = true;
+    s_initialized = true;
 
+    xTaskNotifyGive(writer_task);
+    xTaskNotifyGive(reader_task);
     return ESP_OK;
+
+fail:
+    ESP_LOGE(TAG, "Audio startup failed: %s", esp_err_to_name(ret));
+
+    /* Workers have never been released and cannot own files or buffers. */
+    if (reader_task != NULL)
+    {
+        vTaskDelete(reader_task);
+    }
+    if (writer_task != NULL)
+    {
+        vTaskDelete(writer_task);
+    }
+
+    if (s_audio_data_queue != NULL)
+    {
+        vQueueDelete(s_audio_data_queue);
+        s_audio_data_queue = NULL;
+    }
+    if (s_free_buffer_queue != NULL)
+    {
+        vQueueDelete(s_free_buffer_queue);
+        s_free_buffer_queue = NULL;
+    }
+
+    for (int i = 0; i < AUDIO_BUFFER_COUNT; i++)
+    {
+        if (buffers[i] != NULL)
+        {
+            heap_caps_free(buffers[i]);
+        }
+    }
+
+    /* No failing operation follows a successful channel enable. */
+    if (s_tx_chan != NULL)
+    {
+        esp_err_t cleanup_ret = i2s_del_channel(s_tx_chan);
+        if (cleanup_ret == ESP_OK)
+        {
+            s_tx_chan = NULL;
+        }
+        else
+        {
+            /* Preserve the handle and reject retry rather than leak it. */
+            ESP_LOGE(TAG, "I2S cleanup failed: %s",
+                     esp_err_to_name(cleanup_ret));
+        }
+    }
+
+    s_playlist = NULL;
+    s_player_cmd_queue = NULL;
+    s_playing = false;
+    return ret;
 }
 
 void audio_player_set_playback(bool playing)

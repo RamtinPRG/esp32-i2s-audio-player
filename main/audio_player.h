@@ -18,6 +18,10 @@ typedef enum
     PLAYER_CMD_TOGGLE_PLAY,
 } player_cmd_t;
 
+/*
+ * Call serially from the controller. Rejects a second successful start.
+ * The playlist and command queue are borrowed and must remain alive.
+ */
 esp_err_t audio_player_start(playlist_t *playlist, QueueHandle_t player_cmd_queue);
 
 void audio_player_set_playback(bool playing);
