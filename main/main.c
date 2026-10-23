@@ -4,11 +4,9 @@
 #include "bsp_display.h"
 #include "bsp_sdcard.h"
 #include "input_knob.h"
-#include "ui.h"
 #include "ui_presenter.h"
 
 #include "esp_log.h"
-#include "esp_lvgl_port.h"
 
 static const char *TAG = "MAIN";
 
@@ -19,11 +17,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ui_presenter_init());
 
     /* Mount SD card */
-    if (lvgl_port_lock(500))
-    {
-        ui_set_status("Mounting SD card...");
-        lvgl_port_unlock();
-    }
+    ESP_ERROR_CHECK(ui_presenter_show_screen(UI_SCREEN_PLAYER, "Mounting SD card..."));
 
     ESP_ERROR_CHECK(bsp_sdcard_mount());
 

@@ -37,6 +37,13 @@ typedef struct
     bool muted;
 } controls_view_t;
 
+typedef enum
+{
+    UI_SCREEN_BOOT = 0,
+    UI_SCREEN_PLAYER,
+    UI_SCREEN_TRANSFER,
+} ui_screen_t;
+
 /* Call once after display/UI initialization, before starting playback. */
 esp_err_t ui_presenter_init(void);
 
@@ -45,5 +52,14 @@ esp_err_t ui_presenter_publish_playback(const playback_view_t *view);
 
 /* Task-context only. Copies a complete controls snapshot. */
 esp_err_t ui_presenter_publish_controls(const controls_view_t *view);
+
+/*
+ * Task-context only.
+ * status is copied and may be NULL.
+ * Status text applies to the player screen's track/status label.
+ */
+esp_err_t ui_presenter_show_screen(
+    ui_screen_t screen,
+    const char *status);
 
 #endif

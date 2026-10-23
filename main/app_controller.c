@@ -84,6 +84,21 @@ static void publish_controls_view(void)
     }
 }
 
+static void present_screen(
+    ui_screen_t screen,
+    const char *status)
+{
+    esp_err_t ret = ui_presenter_show_screen(screen, status);
+
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(
+            TAG,
+            "Failed to publish screen: %s",
+            esp_err_to_name(ret));
+    }
+}
+
 static void apply_volume_and_mute(void)
 {
     audio_player_set_volume(s_volume, s_mute);
@@ -339,13 +354,7 @@ static void start_player_mode(bool from_transfer)
 
     set_mode(APP_MODE_BUSY);
 
-    if (lvgl_port_lock(500))
-    {
-        ui_show_boot_menu(false);
-        ui_show_transfer_screen(false, NULL, NULL, NULL);
-        ui_set_status("Scanning PCM files...");
-        lvgl_port_unlock();
-    }
+    present_screen(UI_SCREEN_PLAYER, "Scanning PCM files...");
 
     playlist_free(&s_playlist);
     esp_err_t ret = playlist_build(&s_playlist);
@@ -354,37 +363,21 @@ static void start_player_mode(bool from_transfer)
     {
         ESP_LOGW(TAG, "No playable PCM files found");
 
-        if (lvgl_port_lock(500))
-        {
-            ui_set_status("No PCM files found!");
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_PLAYER, "No PCM files found!");
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
-        if (lvgl_port_lock(500))
-        {
-            ui_show_boot_menu(true);
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_BOOT, NULL);
 
         set_mode(APP_MODE_BOOT_MENU);
         return;
     }
 
-    if (lvgl_port_lock(500))
-    {
-        ui_set_status("Loading cover art...");
-        lvgl_port_unlock();
-    }
+    present_screen(UI_SCREEN_PLAYER, "Loading cover art...");
 
     playlist_preload_covers(&s_playlist);
 
-    if (lvgl_port_lock(500))
-    {
-        ui_set_status("Starting playback...");
-        lvgl_port_unlock();
-    }
+    present_screen(UI_SCREEN_PLAYER, "Starting playback...");
 
     esp_err_t audio_ret = audio_player_start(&s_playlist, s_player_cmd_queue);
 
@@ -392,19 +385,11 @@ static void start_player_mode(bool from_transfer)
     {
         ESP_LOGE(TAG, "Failed to start audio player");
 
-        if (lvgl_port_lock(500))
-        {
-            ui_set_status("Audio init failed!");
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_PLAYER, "Audio init failed!");
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
-        if (lvgl_port_lock(500))
-        {
-            ui_show_boot_menu(true);
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_BOOT, NULL);
 
         set_mode(APP_MODE_BOOT_MENU);
         return;
@@ -421,18 +406,11 @@ static void enter_transfer_from_boot_menu(void)
 
     audio_player_set_playback(false);
 
+    present_screen(UI_SCREEN_TRANSFER, NULL);
+
     if (lvgl_port_lock(500))
     {
-        ui_show_boot_menu(false);
-
-        ui_show_transfer_screen(
-            true,
-            WIFI_AP_SSID,
-            WIFI_AP_PASSWORD,
-            WIFI_TRANSFER_URL);
-
         ui_set_transfer_status("Starting Wi-Fi...");
-
         lvgl_port_unlock();
     }
 
@@ -450,12 +428,7 @@ static void enter_transfer_from_boot_menu(void)
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
-        if (lvgl_port_lock(500))
-        {
-            ui_show_transfer_screen(false, NULL, NULL, NULL);
-            ui_show_boot_menu(true);
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_BOOT, NULL);
 
         set_mode(APP_MODE_BOOT_MENU);
         return;
@@ -476,12 +449,7 @@ static void enter_transfer_from_boot_menu(void)
 
         vTaskDelay(pdMS_TO_TICKS(1500));
 
-        if (lvgl_port_lock(500))
-        {
-            ui_show_transfer_screen(false, NULL, NULL, NULL);
-            ui_show_boot_menu(true);
-            lvgl_port_unlock();
-        }
+        present_screen(UI_SCREEN_BOOT, NULL);
 
         set_mode(APP_MODE_BOOT_MENU);
         return;
@@ -531,12 +499,7 @@ static void app_control_task(void *arg)
     (void)arg;
 
     publish_controls_view();
-
-    if (lvgl_port_lock(500))
-    {
-        ui_show_boot_menu(true);
-        lvgl_port_unlock();
-    }
+    present_screen(UI_SCREEN_BOOT, NULL);
 
     app_message_t message;
 
