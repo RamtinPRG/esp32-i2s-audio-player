@@ -93,16 +93,6 @@ static void post_app_cmd(app_cmd_t cmd)
     }
 }
 
-static void ui_apply_volume_and_mute(void)
-{
-    if (lvgl_port_lock(200))
-    {
-        ui_update_volume(*s_cfg.volume);
-        ui_update_mute(*s_cfg.mute);
-        lvgl_port_unlock();
-    }
-}
-
 static void volume_autohide_timer_cb(void *arg)
 {
     (void)arg;
@@ -125,11 +115,13 @@ static void enter_volume_mode(void)
 {
     s_ui_mode = INPUT_UI_MODE_VOLUME;
 
+    /*
+     * The controller initializes and updates the displayed
+     * volume and mute values. Input only shows the overlay.
+     */
     if (lvgl_port_lock(500))
     {
         ui_show_volume_mode(true);
-        ui_update_volume(*s_cfg.volume);
-        ui_update_mute(*s_cfg.mute);
         lvgl_port_unlock();
     }
 
@@ -155,44 +147,6 @@ static void exit_volume_mode(void)
         ui_show_volume_mode(false);
         lvgl_port_unlock();
     }
-}
-
-static void change_volume(int delta)
-{
-    int v = (int)(*s_cfg.volume) + delta;
-
-    if (v < 0)
-    {
-        v = 0;
-    }
-
-    if (v > 100)
-    {
-        v = 100;
-    }
-
-    *s_cfg.volume = (uint8_t)v;
-
-    /*
-     * Optional UX choice:
-     * If the user rotates while muted, assume they want audible volume again.
-     * Remove this if you want mute to remain sticky.
-     */
-    if (*s_cfg.mute)
-    {
-        *s_cfg.mute = false;
-    }
-
-    audio_player_set_volume(*s_cfg.volume, *s_cfg.mute);
-    ui_apply_volume_and_mute();
-}
-
-static void toggle_mute(void)
-{
-    *s_cfg.mute = !(*s_cfg.mute);
-
-    audio_player_set_volume(*s_cfg.volume, *s_cfg.mute);
-    ui_apply_volume_and_mute();
 }
 
 /* --------------------------------------------------------------------------
@@ -299,25 +253,25 @@ static void input_control_task(void *arg)
         /* ------------------------------------------------------------ */
         /* Player: volume controls                                       */
         /* ------------------------------------------------------------ */
-        else
+        else /* INPUT_UI_MODE_VOLUME */
         {
             switch (evt)
             {
             case INPUT_EVT_ROTATE_CW:
                 ESP_LOGI(TAG, "Encoder: volume up");
-                change_volume(VOLUME_STEP);
+                post_app_cmd(APP_CMD_VOLUME_UP);
                 volume_activity();
                 break;
 
             case INPUT_EVT_ROTATE_CCW:
                 ESP_LOGI(TAG, "Encoder: volume down");
-                change_volume(-VOLUME_STEP);
+                post_app_cmd(APP_CMD_VOLUME_DOWN);
                 volume_activity();
                 break;
 
             case INPUT_EVT_SHORT_PRESS:
                 ESP_LOGI(TAG, "Encoder: mute/unmute");
-                toggle_mute();
+                post_app_cmd(APP_CMD_TOGGLE_MUTE);
                 volume_activity();
                 break;
 
@@ -327,10 +281,6 @@ static void input_control_task(void *arg)
                 break;
 
             case INPUT_EVT_AUTO_HIDE_VOLUME:
-                /*
-                 * Ignore stale timer events if there has been more
-                 * recent volume activity.
-                 */
                 if ((now - s_last_volume_activity_us) >= VOLUME_AUTO_HIDE_US)
                 {
                     ESP_LOGI(TAG, "Encoder: auto-hide volume mode");
@@ -390,10 +340,7 @@ static void knob_long_press_cb(void *knob_handle, void *user_data)
  * -------------------------------------------------------------------------- */
 esp_err_t input_knob_init(const input_knob_config_t *cfg)
 {
-    if (cfg == NULL ||
-        cfg->player_cmd_queue == NULL ||
-        cfg->volume == NULL ||
-        cfg->mute == NULL)
+    if (cfg == NULL || cfg->player_cmd_queue == NULL)
     {
         return ESP_ERR_INVALID_ARG;
     }

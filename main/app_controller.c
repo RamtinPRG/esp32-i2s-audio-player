@@ -26,14 +26,96 @@ static atomic_int s_app_mode = ATOMIC_VAR_INIT(APP_MODE_BOOT_MENU);
 
 static boot_option_t s_boot_option = BOOT_OPT_PLAYER;
 
-static volatile uint8_t s_volume = 100;
-static volatile bool s_mute = false;
+static uint8_t s_volume = 100;
+static bool s_mute = false;
 
 static playlist_t s_playlist;
 
 static void set_mode(app_mode_t mode)
 {
     atomic_store(&s_app_mode, (int)mode);
+}
+
+static void apply_volume_and_mute(void)
+{
+    audio_player_set_volume(s_volume, s_mute);
+
+    if (lvgl_port_lock(200))
+    {
+        ui_update_volume(s_volume);
+        ui_update_mute(s_mute);
+        lvgl_port_unlock();
+    }
+}
+
+static void change_volume(int delta)
+{
+    int volume = (int)s_volume + delta;
+
+    if (volume < 0)
+    {
+        volume = 0;
+    }
+    else if (volume > 100)
+    {
+        volume = 100;
+    }
+
+    s_volume = (uint8_t)volume;
+
+    /* Preserve the existing behavior: rotation unmutes playback. */
+    s_mute = false;
+
+    apply_volume_and_mute();
+}
+
+/*
+ * Returns true if this is a volume command, including commands
+ * deliberately ignored outside player mode.
+ */
+static bool handle_volume_command(app_cmd_t cmd, app_mode_t mode)
+{
+    switch (cmd)
+    {
+    case APP_CMD_VOLUME_UP:
+    case APP_CMD_VOLUME_DOWN:
+    case APP_CMD_TOGGLE_MUTE:
+        break;
+
+    default:
+        return false;
+    }
+
+    if (mode != APP_MODE_PLAYER)
+    {
+        ESP_LOGW(
+            TAG,
+            "Ignoring volume command %d in mode %d",
+            (int)cmd,
+            (int)mode);
+        return true;
+    }
+
+    switch (cmd)
+    {
+    case APP_CMD_VOLUME_UP:
+        change_volume(VOLUME_STEP);
+        break;
+
+    case APP_CMD_VOLUME_DOWN:
+        change_volume(-VOLUME_STEP);
+        break;
+
+    case APP_CMD_TOGGLE_MUTE:
+        s_mute = !s_mute;
+        apply_volume_and_mute();
+        break;
+
+    default:
+        break;
+    }
+
+    return true;
 }
 /* --------------------------------------------------------------------------
  * Mode transitions
@@ -247,6 +329,8 @@ static void app_control_task(void *arg)
     {
         ui_show_boot_menu(true);
         ui_set_boot_selection(s_boot_option);
+        ui_update_volume(s_volume);
+        ui_update_mute(s_mute);
         lvgl_port_unlock();
     }
 
@@ -260,6 +344,11 @@ static void app_control_task(void *arg)
         }
 
         app_mode_t mode = app_controller_get_mode();
+
+        if (handle_volume_command(cmd, mode))
+        {
+            continue;
+        }
 
         switch (cmd)
         {
@@ -388,6 +477,9 @@ esp_err_t app_controller_submit(app_cmd_t cmd)
     case APP_CMD_FINISH_TRANSFER:
     case APP_CMD_TOGGLE_BOOT_SELECTION:
     case APP_CMD_CONFIRM_BOOT_SELECTION:
+    case APP_CMD_VOLUME_UP:
+    case APP_CMD_VOLUME_DOWN:
+    case APP_CMD_TOGGLE_MUTE:
         break;
 
     default:
@@ -402,14 +494,4 @@ esp_err_t app_controller_submit(app_cmd_t cmd)
     return xQueueSend(s_app_cmd_queue, &cmd, 0) == pdTRUE
                ? ESP_OK
                : ESP_ERR_TIMEOUT;
-}
-
-volatile uint8_t *app_controller_get_volume_ptr(void)
-{
-    return &s_volume;
-}
-
-volatile bool *app_controller_get_mute_ptr(void)
-{
-    return &s_mute;
 }

@@ -13,9 +13,6 @@
 typedef struct
 {
     QueueHandle_t player_cmd_queue;
-
-    volatile uint8_t *volume;
-    volatile bool *mute;
 } input_knob_config_t;
 
 esp_err_t input_knob_init(const input_knob_config_t *cfg);

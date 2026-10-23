@@ -19,7 +19,4 @@ app_mode_t app_controller_get_mode(void);
 /* Task-context only. Success means queued, not completed. */
 esp_err_t app_controller_submit(app_cmd_t cmd);
 
-volatile uint8_t *app_controller_get_volume_ptr(void);
-volatile bool *app_controller_get_mute_ptr(void);
-
 #endif
