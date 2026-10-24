@@ -18,6 +18,10 @@
 
 static const char *TAG = "AUDIO_PLAYER";
 
+/* i2s_channel_write() takes milliseconds, not FreeRTOS ticks. */
+#define AUDIO_WRITE_TIMEOUT_MS 100
+#define AUDIO_WRITE_MAX_TIMEOUTS 3
+
 typedef struct
 {
     uint8_t *data;
@@ -130,6 +134,55 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
     {
         samples[i] = (int16_t)(((int32_t)samples[i] * gain) / 100);
     }
+}
+
+static esp_err_t write_audio_buffer(const audio_buffer_t *buf)
+{
+    size_t offset = 0;
+    unsigned int timeouts = 0;
+
+    while (offset < buf->len)
+    {
+        size_t remaining = buf->len - offset;
+        size_t bytes_written = 0;
+        esp_err_t ret = i2s_channel_write(
+            s_tx_chan, buf->data + offset, remaining,
+            &bytes_written, AUDIO_WRITE_TIMEOUT_MS);
+
+        if (bytes_written > remaining)
+        {
+            return ESP_FAIL;
+        }
+
+        /* A timeout can still have transferred part of the buffer. */
+        offset += bytes_written;
+
+        if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT)
+        {
+            return ret;
+        }
+
+        if (offset == buf->len)
+        {
+            return ESP_OK;
+        }
+
+        if (ret == ESP_ERR_TIMEOUT)
+        {
+            /* Total timeout budget for this buffer, even with progress. */
+            if (++timeouts >= AUDIO_WRITE_MAX_TIMEOUTS)
+            {
+                return ESP_ERR_TIMEOUT;
+            }
+        }
+        else if (bytes_written == 0)
+        {
+            /* Do not spin if the driver reports success without progress. */
+            return ESP_FAIL;
+        }
+    }
+
+    return ESP_OK;
 }
 
 static void publish_playback_view(void)
@@ -387,30 +440,18 @@ static void i2s_write_task(void *arg)
         /* Apply software volume/mute */
         apply_volume_to_buffer(&buf);
 
-        size_t offset = 0;
-
-        while (offset < buf.len)
-        {
-            size_t bytes_written = 0;
-
-            esp_err_t ret = i2s_channel_write(
-                s_tx_chan,
-                buf.data + offset,
-                buf.len - offset,
-                &bytes_written,
-                portMAX_DELAY);
-
-            if (ret != ESP_OK)
-            {
-                ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(ret));
-                break;
-            }
-
-            offset += bytes_written;
-        }
+        esp_err_t ret = write_audio_buffer(&buf);
 
         /* Return buffer to read task */
         xQueueSend(s_free_buffer_queue, &buf, 0);
+
+        if (ret != ESP_OK)
+        {
+            ESP_LOGE(TAG, "I2S write failed; unsent audio discarded: %s",
+                     esp_err_to_name(ret));
+            /* Avoid a tight error loop if the driver keeps failing. */
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
     }
 }
 
