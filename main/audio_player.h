@@ -24,10 +24,12 @@ typedef enum
  */
 esp_err_t audio_player_start(playlist_t *playlist, QueueHandle_t player_cmd_queue);
 
-void audio_player_set_playback(bool playing);
+/* Snapshot only. Change playback through the player command queue. */
 bool audio_player_is_playing(void);
 
+/* Publishes the latest volume/mute pair; applied at an output buffer boundary. */
 void audio_player_set_volume(uint8_t volume, bool mute);
+/* Independent snapshots; two getter calls are not a combined snapshot. */
 uint8_t audio_player_get_volume(void);
 bool audio_player_is_muted(void);
 

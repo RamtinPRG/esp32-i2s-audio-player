@@ -378,6 +378,9 @@ static void start_player_mode(bool from_transfer)
 
     present_screen(UI_SCREEN_PLAYER, "Starting playback...");
 
+    /* Publish gain before startup can release the output worker. */
+    audio_player_set_volume(s_volume, s_mute);
+
     esp_err_t audio_ret = audio_player_start(&s_playlist, s_player_cmd_queue);
 
     if (audio_ret != ESP_OK)
@@ -394,16 +397,12 @@ static void start_player_mode(bool from_transfer)
         return;
     }
 
-    audio_player_set_volume(s_volume, s_mute);
-
     set_mode(APP_MODE_PLAYER);
 }
 
 static void enter_transfer_from_boot_menu(void)
 {
     set_mode(APP_MODE_BUSY);
-
-    audio_player_set_playback(false);
 
     ui_presenter_set_transfer_state("Starting Wi-Fi...", 0, 0);
     present_screen(UI_SCREEN_TRANSFER, NULL);

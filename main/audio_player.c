@@ -4,6 +4,7 @@
 #include "app_config.h"
 #include "audio_output.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,9 +37,29 @@ static playlist_t *s_playlist = NULL;
 
 static bool s_initialized = false;
 
-static volatile bool s_playing = true;
-static volatile uint8_t s_volume = 100;
-static volatile bool s_mute = false;
+/* Reader owns playback changes after startup releases the workers. */
+static atomic_bool s_playing = ATOMIC_VAR_INIT(false);
+
+/* One atomic value publishes volume and mute as a consistent pair. */
+#define AUDIO_VOLUME_MASK 0xFFu
+#define AUDIO_MUTE_FLAG   0x100u
+static atomic_uint s_gain_state = ATOMIC_VAR_INIT(100u);
+
+typedef struct
+{
+    uint8_t volume;
+    bool mute;
+} audio_gain_t;
+
+static audio_gain_t load_gain(void)
+{
+    unsigned int state = atomic_load(&s_gain_state);
+
+    return (audio_gain_t){
+        .volume = (uint8_t)(state & AUDIO_VOLUME_MASK),
+        .mute = (state & AUDIO_MUTE_FLAG) != 0,
+    };
+}
 
 /*
  * Only sd_read_task modifies this snapshot.
@@ -77,8 +98,9 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
         return;
     }
 
-    bool mute = s_mute;
-    uint8_t volume = s_volume;
+    audio_gain_t gain_state = load_gain();
+    bool mute = gain_state.mute;
+    uint8_t volume = gain_state.volume;
 
     if (mute || volume == 0)
     {
@@ -112,7 +134,7 @@ static void apply_volume_to_buffer(audio_buffer_t *buf)
 
 static void publish_playback_view(void)
 {
-    s_playback_view.playing = s_playing;
+    s_playback_view.playing = atomic_load(&s_playing);
 
     esp_err_t ret =
         ui_presenter_publish_playback(&s_playback_view);
@@ -177,7 +199,7 @@ static void sd_read_task(void *arg)
             }
             else if (cmd == PLAYER_CMD_TOGGLE_PLAY)
             {
-                s_playing = !s_playing;
+                atomic_store(&s_playing, !atomic_load(&s_playing));
                 publish_playback_view();
             }
         }
@@ -264,7 +286,7 @@ static void sd_read_task(void *arg)
         /* ------------------------------------------------------------
          * If paused, send silence buffers to flush I2S DMA
          * ------------------------------------------------------------ */
-        if (!s_playing)
+        if (!atomic_load(&s_playing))
         {
             if (xQueueReceive(s_free_buffer_queue, &buf, pdMS_TO_TICKS(10)) == pdTRUE)
             {
@@ -473,7 +495,7 @@ esp_err_t audio_player_start(playlist_t *playlist, QueueHandle_t player_cmd_queu
         goto fail;
     }
 
-    s_playing = true;
+    atomic_store(&s_playing, true);
     s_initialized = true;
 
     xTaskNotifyGive(writer_task);
@@ -530,18 +552,13 @@ fail:
 
     s_playlist = NULL;
     s_player_cmd_queue = NULL;
-    s_playing = false;
+    atomic_store(&s_playing, false);
     return ret;
-}
-
-void audio_player_set_playback(bool playing)
-{
-    s_playing = playing;
 }
 
 bool audio_player_is_playing(void)
 {
-    return s_playing;
+    return atomic_load(&s_playing);
 }
 
 void audio_player_set_volume(uint8_t volume, bool mute)
@@ -551,16 +568,21 @@ void audio_player_set_volume(uint8_t volume, bool mute)
         volume = 100;
     }
 
-    s_volume = volume;
-    s_mute = mute;
+    unsigned int state = (unsigned int)volume;
+    if (mute)
+    {
+        state |= AUDIO_MUTE_FLAG;
+    }
+
+    atomic_store(&s_gain_state, state);
 }
 
 uint8_t audio_player_get_volume(void)
 {
-    return s_volume;
+    return load_gain().volume;
 }
 
 bool audio_player_is_muted(void)
 {
-    return s_mute;
+    return load_gain().mute;
 }
