@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "driver/i2s_std.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -74,15 +75,52 @@ static playback_view_t s_playback_view;
 /* --------------------------------------------------------------------------
  * Internal helpers
  * -------------------------------------------------------------------------- */
+/*
+ * Each allocated buffer belongs to exactly one queue or one worker.
+ * Queue sends copy descriptors; clearing the local descriptor marks handoff.
+ */
+static void recycle_audio_buffer(audio_buffer_t *buf)
+{
+    ESP_ERROR_CHECK(buf != NULL && buf->data != NULL
+                        ? ESP_OK : ESP_ERR_INVALID_ARG);
+
+    buf->len = 0;
+
+    /*
+     * The free queue has AUDIO_BUFFER_COUNT slots. While we own a buffer,
+     * at most AUDIO_BUFFER_COUNT - 1 other buffers can occupy it.
+     * Failure indicates a broken ownership invariant, not backpressure.
+     */
+    ESP_ERROR_CHECK(xQueueSend(s_free_buffer_queue, buf, 0) == pdTRUE
+                        ? ESP_OK : ESP_ERR_INVALID_STATE);
+
+    *buf = (audio_buffer_t){0};
+}
+
+/* Consumes the caller's descriptor on both success and failure. */
+static bool enqueue_audio_buffer(audio_buffer_t *buf, TickType_t wait_ticks)
+{
+    ESP_ERROR_CHECK(buf != NULL && buf->data != NULL
+                        ? ESP_OK : ESP_ERR_INVALID_ARG);
+
+    if (xQueueSend(s_audio_data_queue, buf, wait_ticks) != pdTRUE)
+    {
+        recycle_audio_buffer(buf);
+        return false;
+    }
+
+    *buf = (audio_buffer_t){0};
+    return true;
+}
+
 static void flush_audio_data_queue(void)
 {
-    audio_buffer_t tmp;
+    audio_buffer_t tmp = {0};
 
     /*
      * Move any queued full audio buffers back to the free queue.
      *
      * This is used for:
-     * - pause
      * - next track
      * - previous track
      *
@@ -91,7 +129,7 @@ static void flush_audio_data_queue(void)
      */
     while (xQueueReceive(s_audio_data_queue, &tmp, 0) == pdTRUE)
     {
-        xQueueSend(s_free_buffer_queue, &tmp, pdMS_TO_TICKS(10));
+        recycle_audio_buffer(&tmp);
     }
 }
 
@@ -213,7 +251,7 @@ static void sd_read_task(void *arg)
     {
     }
 
-    audio_buffer_t buf;
+    audio_buffer_t buf = {0};
     FILE *f = NULL;
 
     uint32_t track_bytes_read = 0;
@@ -346,11 +384,8 @@ static void sd_read_task(void *arg)
                 memset(buf.data, 0, AUDIO_BUFF_SIZE);
                 buf.len = AUDIO_BUFF_SIZE;
 
-                if (xQueueSend(s_audio_data_queue, &buf, pdMS_TO_TICKS(10)) != pdTRUE)
-                {
-                    /* Return buffer to free queue if send timed out */
-                    xQueueSend(s_free_buffer_queue, &buf, 0);
-                }
+                /* Failed sends also return the buffer to the free pool. */
+                (void)enqueue_audio_buffer(&buf, pdMS_TO_TICKS(10));
             }
 
             continue;
@@ -384,7 +419,7 @@ static void sd_read_task(void *arg)
                 (s_playlist->current_index + 1) % s_playlist->count;
 
             /* Return the empty buffer to the free queue */
-            xQueueSend(s_free_buffer_queue, &buf, 0);
+            recycle_audio_buffer(&buf);
 
             /*
              * Small delay to let I2S DMA finish playing the last buffers
@@ -409,7 +444,7 @@ static void sd_read_task(void *arg)
         }
 
         /* Send filled buffer to I2S writer */
-        if (xQueueSend(s_audio_data_queue, &buf, portMAX_DELAY) != pdTRUE)
+        if (!enqueue_audio_buffer(&buf, portMAX_DELAY))
         {
             ESP_LOGE(TAG, "Failed to send audio buffer to data queue");
         }
@@ -428,7 +463,7 @@ static void i2s_write_task(void *arg)
     {
     }
 
-    audio_buffer_t buf;
+    audio_buffer_t buf = {0};
 
     while (1)
     {
@@ -443,7 +478,7 @@ static void i2s_write_task(void *arg)
         esp_err_t ret = write_audio_buffer(&buf);
 
         /* Return buffer to read task */
-        xQueueSend(s_free_buffer_queue, &buf, 0);
+        recycle_audio_buffer(&buf);
 
         if (ret != ESP_OK)
         {
